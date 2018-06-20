@@ -99,7 +99,11 @@ if (state.find !== '') {
     device = Cap.findDevice(state.find);
   }
   console.log(`find "${state.find}"`);
-  console.log(device);
+  if (device !== undefined) {
+    console.log(`Found device: ${device}`);
+  } else {
+    console.log(`device not found: "${state.find}"`)
+  }
   process.exit(0);
 }
 
