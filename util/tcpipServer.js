@@ -13,7 +13,7 @@ commander
 
 const host = commander.host ? commander.host : '127.0.0.1';
 const port = commander.port ? commander.port : 1337;
-const message = commander.message ? commander.message : 'Echo Win7 server\r\n';
+const message = commander.message ? (commander.message + '\r\n') : 'Echo Win7 server\r\n';
 
 const server = net.createServer(function(socket) {
   socket.write(message);
