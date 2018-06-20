@@ -1,0 +1,21 @@
+{
+  "name": "sensor",
+  "version": "0.0.1",
+  "description": "measure and accumulate packet lengths over a period of time and report it",
+  "main": "sensor.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "tcpdump",
+    "npcap",
+    "synergyCheck",
+    "sensor"
+  ],
+  "author": "John Lewczyk",
+  "license": "ISC",
+  "dependencies": {
+    "cap": "^0.2.0",
+    "commander": "^2.15.1"
+  }
+}
