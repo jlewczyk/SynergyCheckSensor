@@ -9,6 +9,7 @@ commander
     .option('-h, --host [value]','the host ip address or dns name that is listening for a tcp/ip connection')
     .option('-p, --port <n>','the port on the host which is listening for a tcp/ip connection')
     .option('-m, --message [value]','the message string to send on connection')
+    .option('-v, --verbose','the message string to send on connection')
     .parse(process.argv);
 
 const host = commander.host ? commander.host : '127.0.0.1';
