@@ -14,7 +14,8 @@ const state = {
   connections: undefined,
   servers: undefined,
   clients: undefined,
-  maxMessages: 1,
+  maxMessages: 0, // defaults to no limit on # of messages sent
+  report: true,
   verbose: false,
   debug: false,
   version: '0.0.1'
@@ -39,6 +40,7 @@ commander
     .option('-s, --servers <n>','the # of servers to create (use if not specify connections')
     .option('-k, --clients <n>','the # of clients to create (use if not specify connections')
     .option('-x, --max <n>','the max # of messages each client sends')
+    .option('-r, --report','output report at close of client or server')
     .option('-v, --verbose','output verbose information')
     .option('-d, --debug','output debugging information')
     .parse(process.argv);
@@ -94,6 +96,9 @@ if (commander.max !== undefined) {
   }
   state.maxMessages = maxMessages;
 }
+if (commander.report !== undefined) {
+  state.report = commander.report;
+}
 if (commander.verbose !== undefined) {
   state.verbose = commander.verbose;
 }
@@ -126,7 +131,7 @@ function Client(config) {
   this.messageSize = this.initMessageSize;
   this.message = '';
   this.messageCount = 0;
-  this.messageSizeAccumulted = 0; // accumulated size of messages
+  this.totalCharactersSent = 0; // accumulated size of messages
 
   // if not passed truthy, must perform client.connect() which return promise
   // config.connect is by default falsey
@@ -153,7 +158,11 @@ Client.prototype.connect = function() {
         console.log(`Client ${this.name} received: ${data}`);
       }
     }).on('close', () => {
-      console.log(`Client ${this.name} connection closed`);
+      console.log(`Client ${this.toString()} connection closed`);
+      if (state.report) {
+        console.log(`messages sent: ${this.messageCount}`);
+        console.log(`total characters sent: ${this.totalCharactersSent}`)
+      }
     }).on('error', (err) => {
       console.error(`Client ${this.name} connection error: ${err}`);
     });
@@ -167,7 +176,8 @@ Client.prototype.close = function() {
 Client.prototype.startWriteMessages = function() {
   this.intervalObj = setInterval(() => {
     if (!this.sendMessage()) {
-      this.intervalObj.cancel();
+      clearInterval(this.intervalObj);
+      this.close();
     }
   }, this.interval);
 };
@@ -193,7 +203,7 @@ Client.prototype.computeNextMessage = function() {
 Client.prototype.sendMessage = function() {
   if (this.computeNextMessage()) {
     this.client.write(this.message);
-    this.messageSizeAccumulted + this.messageSize;
+    this.totalCharactersSent + this.messageSize;
     return true;
   }
   return false;
@@ -226,8 +236,8 @@ function Server(config) {
   this.openMessage = config.openMessage;
   this.echo = config.echo !== undefined ? config.echo : true;
 
-  this.receivedData = 0;
-  this.receivedLength = 0;
+  this.totalCharactersReceived = 0;
+  this.messagesReceived = 0;
   this.lastReception = 0; // set to Date().now()
   if (state.verbose) {
     console.log(`Server ${this.toString()} created`);
@@ -257,8 +267,8 @@ Server.prototype.start = function() {
       // handle errors here
       console.error(`${this.toString()} clientError ${err}`);
     }).on('data', (data) => {
-      this.receivedData++;
-      this.receivedLength += data.length;
+      this.totalCharactersReceived += data.length;
+      this.messagesReceived++;
       this.lastReception = Date.now();
     }).on('end', () => {
       // handle errors here
@@ -278,6 +288,10 @@ Server.prototype.close = function() {
   this.server.close((err) => {
     if (state.verbose) {
       console.log('Server ${this.toString()) closed');
+    }
+    if (state.report) {
+      console.log(`Server messages received ${this.messagesReceived}`);
+      console.log(`Server characters received ${this.totalCharactersReceived}`);
     }
     if (err) {
       console.error('Server ${this.toString())')
@@ -320,7 +334,7 @@ if (state.connections) {
             host: state.host,
             port: state.port + i,
             seed: String.fromCharCode(97 + i), // 'a', 'b', ...
-            maxMessages: 1,
+            maxMessages: state.maxMessages || 0,
             connect: true
           });
           clients.push(client);
@@ -337,7 +351,7 @@ if (state.connections) {
           host: state.host,
           port: state.port + i,
           seed: String.fromCharCode(97 + i), // 'a', 'b', ...
-          maxMessages: 1,
+          maxMessages: state.maxMessages || 0,
           connect: false
         });
         clients.push(client);
