@@ -102,6 +102,10 @@ if (commander.debug !== undefined) {
 }
 
 console.log(`trafficSim version ${state.version}`);
+
+if (state.verbose || state.debug) {
+  console.log(JSON.stringify(state, null, 2));
+}
 // Clients can connect to servers on this VM, or
 // can connect to servers on other VMs
 function Client(config) {
@@ -178,6 +182,7 @@ Client.prototype.computeNextMessage = function() {
     if (this.messageSize > this.maxMessageSize) {
       this.messageSize = this.initMessageSize;
     }
+    this.messageCount++;
     return true;
   }
   if (state.verbose) {

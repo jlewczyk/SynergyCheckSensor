@@ -11,22 +11,27 @@ const decoders = require('cap').decoders;
 const PROTOCOL = decoders.PROTOCOL;
 
 const c = new Cap();
-const device = Cap.findDevice('192.168.1.5');
+// const device = Cap.findDevice('192.168.1.5');
 var filter;
 const bufSize = 10 * 1024 * 1024;
 const buffer = Buffer.alloc(65535);
 
 const commanderArgs = [
-  'device',
-  'port',
-  'release',
-  'verbose',
-  'debug'
+    'list',
+    'find',
+    'device',
+    'filter',
+    'port',
+    'content',
+    'release',
+    'verbose',
+    'debug'
 ];
 
 const state = {
   release: '0.0.1', // todo
   find: '',
+  filter: 'tcp and dst port ${this.port}', // can ref values in state object
   device: '192.168.1.5',
   port: 80,
   commandLine: {},
@@ -40,6 +45,7 @@ commander
     .option('-l, --list','list devices on this machine.  Pick one and run again specifying --device xxxx')
     .option('-f, --find [value]','find first device with specified ip' + state.find + '"')
     .option('-d, --device [value]','The device name to monitor, overrides "' + state.device + '"')
+    .option('-x, --filter [value]','filter expression' + state.filter + '"')
     .option('-p, --port [value]', 'port the web server is listening on, override default of 80 or 443 depending on http or https')
     .option('-b, --content', 'output packet message content for debugging, overrides "' + state.content + '"')
     .option('-r, --release [value]', 'The release of the server software , overrides "' + state.release + '"')
@@ -54,6 +60,9 @@ commanderArgs.forEach(function(k) {
 
 if (commander.find !== undefined) {
   state.find = commander.find;
+}
+if (commander.filter !== undefined) {
+  state.filter = commander.filter;
 }
 if (commander.device !== undefined) {
   state.device = commander.device;
@@ -71,7 +80,7 @@ if (commander.debug !== undefined) {
   state.debug = !!commander.debug;
 }
 
-if (state.verbose) {
+if (state.debug) {
   console.log(JSON.stringify(state, null, ' '));
 }
 //====================  --list ==========================
@@ -113,7 +122,15 @@ if (state.find !== '') {
   process.exit(0);
 }
 //====================== monitoring =======================
-filter = `tcp and dst port ${state.port}`;
+try {
+  filter = new Function('return `' + state.filter + '`;').apply(state);
+} catch (ex) {
+  console.error('failure to process filter \'' + state.filter + '\'');
+  console.error(ex);
+  process.exit(1);
+}
+// filter = `tcp and dst port ${state.port}`;
+console.log(`monitor device ${state.device} filter '${state.filter}'`);
 let linkType = c.open(state.device, filter, bufSize, buffer);
 console.log(`linkType=${linkType}`);
 
