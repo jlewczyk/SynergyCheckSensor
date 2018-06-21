@@ -203,7 +203,7 @@ Client.prototype.computeNextMessage = function() {
 Client.prototype.sendMessage = function() {
   if (this.computeNextMessage()) {
     this.client.write(this.message);
-    this.totalCharactersSent + this.messageSize;
+    this.totalCharactersSent += this.message.length;
     return true;
   }
   return false;
