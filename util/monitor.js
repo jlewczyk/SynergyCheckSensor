@@ -115,12 +115,12 @@ if (state.find !== '') {
 //====================== monitoring =======================
 filter = `tcp and dst port ${state.port}`;
 let linkType = c.open(state.device, filter, bufSize, buffer);
+console.log(`linkType=${linkType}`);
 
 c.setMinBytes && c.setMinBytes(0); // windows only
 
 c.on('packet', function(nbytes, trunc) {
-  console.log('packet: length ' + nbytes + ' bytes, truncated? '
-      + (trunc ? 'yes' : 'no'));
+  console.log(`${new Date().toLocaleString()} packet: length ${nbytes} bytes, truncated? ${trunc ? 'yes' : 'no'}`);
 
   // raw packet data === buffer.slice(0, nbytes)
 
@@ -129,32 +129,32 @@ c.on('packet', function(nbytes, trunc) {
 
     if (ret.info.type === PROTOCOL.ETHERNET.IPV4) {
       if (state.verbose) {
-        console.log('Decoding IPv4 ...');
+        console.log('    Decoding IPv4 ...');
       }
 
       ret = decoders.IPV4(buffer, ret.offset);
-      console.log('IPv4 info - from: ' + ret.info.srcaddr + ' to ' + ret.info.dstaddr);
+      console.log('    IPv4 info - from: ' + ret.info.srcaddr + ' to ' + ret.info.dstaddr);
 
       if (ret.info.protocol === PROTOCOL.IP.TCP) {
         let datalen = ret.info.totallen - ret.hdrlen;
         if (state.verbose) {
-          console.log('Decoding TCP ...');
+          console.log('    Decoding TCP ...');
         }
 
         ret = decoders.TCP(buffer, ret.offset);
-        console.log('  TCP info - from port: ' + ret.info.srcport + ' to port: ' + ret.info.dstport);
+        console.log(`    TCP info - from port: ${ret.info.srcport} to port: ${ret.info.dstport} length ${datalen}`);
         datalen -= ret.hdrlen;
         if (state.content) {
-          console.log(buffer.toString('binary', ret.offset, ret.offset + datalen));
+          console.log('    ' + buffer.toString('binary', ret.offset, ret.offset + datalen));
         }
       } else if (ret.info.protocol === PROTOCOL.IP.UDP) {
         if (state.verbose) {
-          console.log('Decoding UDP ...');
+          console.log('    Decoding UDP ...');
         }
 
         ret = decoders.UDP(buffer, ret.offset);
-        console.log('  UDP info - from port: ' + ret.info.srcport + ' to port: ' + ret.info.dstport);
-        console.log(buffer.toString('binary', ret.offset, ret.offset + ret.info.length));
+        console.log('    UDP info - from port: ' + ret.info.srcport + ' to port: ' + ret.info.dstport);
+        console.log('    ' + buffer.toString('binary', ret.offset, ret.offset + ret.info.length));
       } else
         console.log('Unsupported IPv4 protocol: ' + PROTOCOL.IP[ret.info.protocol]);
     } else

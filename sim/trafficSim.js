@@ -14,11 +14,15 @@ const state = {
   connections: undefined,
   servers: undefined,
   clients: undefined,
+  maxMessages: 1,
   verbose: false,
   debug: false,
   version: '0.0.1'
 };
 
+const clients = [];
+const servers = [];
+const connections = [];
 
 // specify either:
 //  node util/trafficSim --host 192.168.1.5 --post 20000 --connections 10
@@ -34,6 +38,7 @@ commander
     .option('-c, --connections <n>','the # of connections to create (server/client pairs')
     .option('-s, --servers <n>','the # of servers to create (use if not specify connections')
     .option('-k, --clients <n>','the # of clients to create (use if not specify connections')
+    .option('-x, --max <n>','the max # of messages each client sends')
     .option('-v, --verbose','output verbose information')
     .option('-d, --debug','output debugging information')
     .parse(process.argv);
@@ -81,6 +86,14 @@ if (commander.port !== undefined) {
   }
   state.port = port;
 }
+if (commander.maxMessages !== undefined) {
+  let maxMessages = Number.parseInt(commander.maxMessages);
+  if (maxMessages < 0) {
+    console.error('maxMessages must be >= 0');
+    process.exit(1);
+  }
+  state.maxMessages = maxMessages;
+}
 if (commander.verbose !== undefined) {
   state.verbose = commander.verbose;
 }
@@ -103,14 +116,15 @@ function Client(config) {
   this.initMessageSize = config.initMessageSize || 100; // initial size
   this.messageSizeIncrement = config.messageSizeIncrement || 100; // each size increment
   this.maxMessageSize = config.maxMessageSize || 500; // max size before wrapping
-  this.maxMessages = config.maxMessages || 0; // 0 means no limit BE CAREFUL!
+  this.maxMessages = config.maxMessages || state.maxMessages; // 0 means no limit BE CAREFUL!
   this.seed = config.seed || 'x';
 
   this.message = '';
   this.messageCount = 0;
   this.messageSizeAccumulted = 0; // accumulated size of messages
 
-  // if not passed truthy, must perform client.connect().then()
+  // if not passed truthy, must perform client.connect() which return promise
+  // config.connect is by default falsey
   if (config.connect) {
     this.connect();
   }
@@ -120,21 +134,23 @@ Client.count = 0;
 // Instantiate a client to a working server
 // returns Promuse resolved when established
 Client.prototype.connect = function() {
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve) => {
     // Establish connection
     this.client = new net.Socket();
     this.client.connect(this.port, this.host, () => {
       if (state.verbose) {
         console.log(`Client ${this.toString()} connected`);
       }
-      this.client.write(message);
-      resolve();
+      this.startWriteMessages();
+      resolve(this);
     }).on('data', (data) => {
       if (state.verbose) {
         console.log(`Client ${this.name} received: ${data}`);
       }
     }).on('close', () => {
       console.log(`Client ${this.name} connection closed`);
+    }).on('error', (err) => {
+      console.error(`Client ${this.name} connection error: ${err}`);
     });
   });
 };
@@ -142,10 +158,16 @@ Client.prototype.close = function() {
   this.client.end();
   this.client.destroy(); // kill client after server's response
 };
+// automatic send messages, based on config
+Client.prototype.startWriteMessages = function() {
+  // todo
+  this.client.write('one time');
+};
 // compute the next message to send
 // return false if no message to be sent (exceeded threshold)
 Client.prototype.nextMessage = function() {
-  if (this.messageCount < this.maxMessages) {
+  // this.this.maxMessages === 0 means no limit!
+  if (!this.maxMessages || (this.messageCount < this.maxMessages)) {
     this.message.length += this.messageSizeIncrement;
     if (this.message.length > this.maxMessageSize) {
       this.message.length = this.initMessageSize;
@@ -195,28 +217,48 @@ function Server(config) {
   this.receivedData = 0;
   this.receivedLength = 0;
   this.lastReception = 0; // set to Date().now()
-
-  this.server = net.createServer((socket) => {
-    if (this.openMessage) {
-      socket.write(this.openMessage);
-    }
-    // Server just echos back what it receives
-    socket.pipe(socket);
-  }).on('error', (err) => {
-    // handle errors here
-    console.error(err);
-  }).on('data', (data) => {
-    this.receivedData++;
-    this.receivedLength += data.length;
-    this.lastReception = Date.now();
-  });
-
-  this.server.listen(this.port, this.host);
   if (state.verbose) {
-    console.log(`Server ${this.toString()} created and listenting on ${this.port}`);
+    console.log(`Server ${this.toString()} created`);
   }
+  // if not passed truthy, must perform server.start()
+  // default is falsey because constructor cannot return
+  // a Promise, but start() can, if have to wait for server
+  if (config.start) {
+    this.start();
+  }
+
 }
 Server.count = 0;
+// returns promise that resolves if server starts
+Server.prototype.start = function() {
+  return new Promise((resolve) => {
+    this.server = net.createServer((socket) => {
+      if (this.openMessage) {
+        socket.write(this.openMessage);
+      }
+      // Server just echos back what it receives
+      socket.pipe(socket);
+    }).on('error', (err) => {
+      // handle errors here
+      console.error(err);
+    }).on('data', (data) => {
+      this.receivedData++;
+      this.receivedLength += data.length;
+      this.lastReception = Date.now();
+    }).on('end', () => {
+      // handle errors here
+      if (state.verbose) {
+        console.log(`${this.toString()} client disconnected`);
+      }
+    });
+
+    this.server.listen(this.port, this.host);
+    if (state.verbose) {
+      console.log(`Server ${this.toString()} listenting on ${this.port}`);
+    }
+    resolve(this);
+  });
+};
 Server.prototype.close = function() {
   this.server.close((err) => {
     if (state.verbose) {
@@ -237,29 +279,59 @@ function Connection(config) {
   this.server = config.server;
 }
 
-// Create specified # of clients to connect to state.host at port state.post + i
-if (state.clients) {
-  for (let i = 0; i < state.clients; i++) {
-    let client = new Client({
-      name: `Client ${i + 1}`,
-      host: state.host,
-      port: state.port + i,
-      seed: String.fromCharCode(97 + i), // 'a', 'b', ...
-      maxMessages: 1
-    });
-  }
-}
-if (state.servers) {
-  for (let i = 0; i < state.servers; i++) {
-    let client = new Server({
-      name: `Server ${i + 1}`,
-      host: state.host,
-      port: state.port + i,
-      openMessage: `Greetings from Server ${i}`,
-      maxMessages: 1
-    });
-  }
-}
 if (state.connections) {
   console.log('connections not implemented yet');
+} else {
+  if (state.servers) {
+    for (let i = 0; i < state.servers; i++) {
+      let server = new Server({
+        name: `Server ${i + 1}`,
+        host: state.host,
+        port: state.port + i,
+        openMessage: `Greetings from Server ${i + 1}`,
+        start: !state.clients // if clients, then start below so we can use the promise
+      });
+      servers.push(server);
+    }
+    if (!!state.clients) {
+      // create clients for each server, but not until AFTER they all start
+      let promises = servers.map(s => {
+        return s.start();
+      });
+      Promise.all(promises).then(() => {
+        for (let i = 0; i < state.clients; i++) {
+          let client = new Client({
+            name: `Client ${i + 1}`,
+            host: state.host,
+            port: state.port + i,
+            seed: String.fromCharCode(97 + i), // 'a', 'b', ...
+            maxMessages: 1,
+            connect: true
+          });
+          clients.push(client);
+        }
+      });
+    }
+
+  } else { // only clients
+    // Create specified # of clients to connect to state.host at port state.post + i
+    if (state.clients) {
+      for (let i = 0; i < state.clients; i++) {
+        let client = new Client({
+          name: `Client ${i + 1}`,
+          host: state.host,
+          port: state.port + i,
+          seed: String.fromCharCode(97 + i), // 'a', 'b', ...
+          maxMessages: 1,
+          connect: false
+        });
+        clients.push(client);
+        client.connect().then((client) => {
+          if (state.verbose) {
+            console.log(`${client.toString()} connection started`);
+          }
+        });
+      }
+    }
+  }
 }
