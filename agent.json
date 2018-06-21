@@ -1,0 +1,18 @@
+{
+  "name": "trialAgent",
+  "httpProtocol": "http",
+  "hostName": "10.157.100.71",
+  "port": 19999,
+  "synergyCheck": {
+    "api": "http://www.synergyCheck.com/api/v1/"
+  },
+  "report": {
+    "period": 60000
+  },
+  "sensors": [
+    {
+      "name": "trialSensor",
+      "id": "c9b1babb-2189-4d62-90a1-8376a6eac2b8"
+    }
+  ]
+}
