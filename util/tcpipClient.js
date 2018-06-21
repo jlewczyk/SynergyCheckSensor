@@ -21,7 +21,7 @@ var client = new net.Socket();
 client.connect(port, host, function() {
   console.log('Connected');
   client.write(message);
-  // client.end();
+  client.end();
 });
 
 client.on('data', function(data) {

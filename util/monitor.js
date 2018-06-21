@@ -145,7 +145,7 @@ c.on('packet', function(nbytes, trunc) {
         console.log(`    TCP info - from port: ${ret.info.srcport} to port: ${ret.info.dstport} length ${datalen}`);
         datalen -= ret.hdrlen;
         if (state.content) {
-          console.log('    ' + buffer.toString('binary', ret.offset, ret.offset + datalen));
+          console.log('    content: ' + buffer.toString('binary', ret.offset, ret.offset + datalen));
         }
       } else if (ret.info.protocol === PROTOCOL.IP.UDP) {
         if (state.verbose) {
@@ -156,8 +156,8 @@ c.on('packet', function(nbytes, trunc) {
         console.log('    UDP info - from port: ' + ret.info.srcport + ' to port: ' + ret.info.dstport);
         console.log('    ' + buffer.toString('binary', ret.offset, ret.offset + ret.info.length));
       } else
-        console.log('Unsupported IPv4 protocol: ' + PROTOCOL.IP[ret.info.protocol]);
+        console.log('    Unsupported IPv4 protocol: ' + PROTOCOL.IP[ret.info.protocol]);
     } else
-      console.log('Unsupported Ethertype: ' + PROTOCOL.ETHERNET[ret.info.type]);
+      console.log('    Unsupported Ethertype: ' + PROTOCOL.ETHERNET[ret.info.type]);
   }
 });

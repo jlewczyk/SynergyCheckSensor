@@ -86,8 +86,8 @@ if (commander.port !== undefined) {
   }
   state.port = port;
 }
-if (commander.maxMessages !== undefined) {
-  let maxMessages = Number.parseInt(commander.maxMessages);
+if (commander.max !== undefined) {
+  let maxMessages = Number.parseInt(commander.max);
   if (maxMessages < 0) {
     console.error('maxMessages must be >= 0');
     process.exit(1);
@@ -112,13 +112,14 @@ function Client(config) {
   this.host = config.host;
   this.port = config.port;
 
-  this.interval = config.interval || (10 * 1000); // millis between message sends
+  this.interval = config.interval || (10 * 1000); // 10 seeconds in millis between message sends
   this.initMessageSize = config.initMessageSize || 100; // initial size
   this.messageSizeIncrement = config.messageSizeIncrement || 100; // each size increment
   this.maxMessageSize = config.maxMessageSize || 500; // max size before wrapping
   this.maxMessages = config.maxMessages || state.maxMessages; // 0 means no limit BE CAREFUL!
   this.seed = config.seed || 'x';
 
+  this.messageSize = this.initMessageSize;
   this.message = '';
   this.messageCount = 0;
   this.messageSizeAccumulted = 0; // accumulated size of messages
@@ -160,19 +161,23 @@ Client.prototype.close = function() {
 };
 // automatic send messages, based on config
 Client.prototype.startWriteMessages = function() {
-  // todo
-  this.client.write('one time');
+  this.intervalObj = setInterval(() => {
+    if (!this.sendMessage()) {
+      this.intervalObj.cancel();
+    }
+  }, this.interval);
 };
 // compute the next message to send
 // return false if no message to be sent (exceeded threshold)
-Client.prototype.nextMessage = function() {
-  // this.this.maxMessages === 0 means no limit!
+Client.prototype.computeNextMessage = function() {
+  // this.maxMessages === 0 means no limit
   if (!this.maxMessages || (this.messageCount < this.maxMessages)) {
-    this.message.length += this.messageSizeIncrement;
-    if (this.message.length > this.maxMessageSize) {
-      this.message.length = this.initMessageSize;
+    this.message = makeMessageString(this.seed, this.messageSize);
+    // next message size computed
+    this.messageSize += this.messageSizeIncrement;
+    if (this.messageSize > this.maxMessageSize) {
+      this.messageSize = this.initMessageSize;
     }
-    this.message = makeMessageString(this.seed, this.message.length)
     return true;
   }
   if (state.verbose) {
@@ -181,10 +186,12 @@ Client.prototype.nextMessage = function() {
   return false;
 };
 Client.prototype.sendMessage = function() {
-  if (this.nextMessage()) {
+  if (this.computeNextMessage()) {
     this.client.write(this.message);
-    this.messageSizeAccumulted + this.message.length;
+    this.messageSizeAccumulted + this.messageSize;
+    return true;
   }
+  return false;
 };
 Client.prototype.toString = function() {
   return `Client ${this.name}(${this.id})`;
@@ -240,7 +247,10 @@ Server.prototype.start = function() {
       socket.pipe(socket);
     }).on('error', (err) => {
       // handle errors here
-      console.error(err);
+      console.error(`${this.toString()} error ${err}`);
+    }).on('clientError', (err) => {
+      // handle errors here
+      console.error(`${this.toString()} clientError ${err}`);
     }).on('data', (data) => {
       this.receivedData++;
       this.receivedLength += data.length;
