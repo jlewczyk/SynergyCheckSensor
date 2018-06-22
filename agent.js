@@ -52,7 +52,7 @@ let swaggerDocument;
 
 let connectionsAcc = []; // accumulating reports from sensors
 
-let lastReport = {}; // intiialize to empty - first time, everything is different
+let priorReport = false; // intiialize to false so recognize first time
 
 // list of valid top level keys in config file
 // todo - add type, required, and deeper paths to validate config oontents
@@ -252,7 +252,7 @@ app.post('/api/v1/sensor/report', function (req, res) {
           timestampDate = undefined;
         } else {
           // so all the connection timestamps are the same
-          isoTimestamp = date.toISOString();
+          isoTimestamp = timestampDate.toISOString();
         }
       } catch (exDate) {
         errors.push(`invalid format for timestamp "${timestamp}"`);
@@ -273,7 +273,7 @@ app.post('/api/v1/sensor/report', function (req, res) {
         // process the character count being reported (if any)
         if (typeof(ic.charCount) !== 'undefined') {
           if (typeof(ic.charCount) === 'number') {
-            charCount = ic.char;
+            charCount = ic.charCount;
             if (charCount < 0) {
               errors.push(`cannot report negative charCount (${charCount}) for connectionId ${icId}`);
             }
@@ -312,7 +312,7 @@ app.post('/api/v1/sensor/report', function (req, res) {
               }
               connection.disconnected = ic.disconnected;
             }
-            connection.timestamps.push(date.toISOString());
+            connection.timestamps.push(isoTimestamp);
           } else {
             connectionsAcc.push({
               connectionId: icId,
@@ -333,15 +333,18 @@ app.post('/api/v1/sensor/report', function (req, res) {
   }
 });
 // Sensor is reporting that it has started
-app.put('/api/v1/sensor/start', function(req, res) {
-  res.state(500).send({ status: 'error', errors: ['not implemented']});
+app.post('/api/v1/sensor/start', function(req, res) {
+  res.status(500).send({ status: 'error', errors: ['not implemented']});
 });
 // Sensor is reporting that it has stopped
-app.put('/api/v1/sensor/stop', function(req, res) {
-  res.state(500).send({ status: 'error', errors: ['not implemented']});
+app.post('/api/v1/sensor/stop', function(req, res) {
+  res.status(500).send({ status: 'error', errors: ['not implemented']});
 });
-app.get('/api/v1/sensor/lastReport', function(req, res) {
-  res.send(lastReport || {});
+app.get('/api/v1/sensor/priorReport', function(req, res) {
+  res.send(priorReport || {});
+});
+app.get('/api/v1/sensor/nextReport', function(req, res) {
+  res.send(getReport());
 });
 // return object containing body of post request to be sent to SynergyCheck.com server
 function getReport() {
@@ -355,13 +358,14 @@ function getReport() {
         charCount: o.charCount || 0,
         lastMessageTimestamp: o.lastMessageTimestamp,
         disconnected: o.disconnected,
-        lastChangeInConnectionTimestamp: o.lastChangeInConnectionTimestamp
+        lastChangeInConnectionTimestamp: o.lastChangeInConnectionTimestamp,
+        timestamps: o.timestamps
       };
     })
   };
   if (state.config.report.compress) {
     // remove reporting those connections with no change from last report
-    if (lastReport) {
+    if (priorReport) {
       snapshot.connections = snapshot.connections.filter(o => {
         if (o.charCount) {
           return true; // always report if has messages
@@ -369,7 +373,7 @@ function getReport() {
         // no messages, check if change in disconnected? status
         if (typeof(o.disconnected) !== 'undefined') {
           // we have a value for disconnected
-          let connectionPrior = lastReport.connections.find(c => c.connectionId === o.connectionId);
+          let connectionPrior = priorReport.connections.find(c => c.connectionId === o.connectionId);
           if (connectionPrior) {
             return connectionPrior.disconnected !== o.disconnected;
           }

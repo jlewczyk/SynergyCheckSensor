@@ -100,6 +100,34 @@ paths:
       responses:
         405:
           description: "Invalid input"
+  /sensor/priorReport:
+    get:
+      tags:
+      - sensor
+      summary: get prior sent report
+      description: server keeps prior report posted
+      operationId: sensorPriorReport
+      produces:
+      - "application/json"
+      responses:
+        200:
+          description: "successful operation"
+          schema:
+            $ref: "#/definitions/SensorReport"
+  /sensor/nextReport:
+    get:
+      tags:
+      - sensor
+      summary: get next report
+      description: server accumulates report to be posted
+      operationId: sensorNextReport
+      produces:
+      - "application/json"
+      responses:
+        200:
+          description: "successful operation"
+          schema:
+            $ref: "#/definitions/SensorReport"
 securityDefinitions:
   api_key:
     type: "apiKey"

@@ -14,7 +14,7 @@
   "sensors": [
     {
       "name": "trialSensor",
-      "id": "c9b1babb-2189-4d62-90a1-8376a6eac2b8",
+      "sensorId": "c9b1babb-2189-4d62-90a1-8376a6eac2b8",
       "connections": [
         {
           "type": "ip",
