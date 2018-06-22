@@ -201,7 +201,7 @@ logger.info(JSON.stringify(state, null, '  '));
 // Serve only the static files form the dist directory
 const distFolder = __dirname + '/dist';
 if (!fs.existsSync(distFolder)) {
-  console.error("distribution folder does not exist:" + distFolder);
+  logger.error("distribution folder does not exist:" + distFolder);
   process.exit(1);
 }
 app.use(express.static(distFolder));
@@ -235,10 +235,15 @@ app.post('/api/v1/sensor/report', function (req, res) {
   if (obj && typeof(obj.snapshot) === 'object') {
     // de-structure
     let {sensorId, customerId, timestamp, duration, connections} = obj.snapshot;
-    logger.info(`sensorId=${sensorId}`);
-    logger.info(`customerId=${customerId}`);
-    logger.info(`timestamp=${timestamp}`);
-    logger.info(`duration=${duration}`);
+    if (state.verbose) {
+      logger.info(`sensorId=${sensorId}`);
+      logger.info(`customerId=${customerId}`);
+      logger.info(`timestamp=${timestamp}`);
+      logger.info(`duration=${duration}`);
+    }
+    if (state.debug) {
+      logger.info(JSON.stringify(obj, null, '  '));
+    }
 
     // validate sensorId?
     if (typeof(sensorId) === 'undefined') {
@@ -383,13 +388,22 @@ app.post('/api/v1/sensor/report', function (req, res) {
             });
           }
           res.status(200).send({ status: 'ok'});
+          if (state.debug) {
+            logger.info('ok');
+          }
         } else {
           res.status(412).send({ status: 'errors', errors: errors });
+          if (state.debug) {
+            logger.error('errors: ' + JSON.stringify(errors, null, '  '));
+          }
         }
       });
     }
   } else {
     res.status(412).send({ status: 'errors', errors: ['no snapshot property']});
+    if (state.debug) {
+      logger.error('errors: ' + JSON.stringify(errors, null, '  '));
+    }
   }
 });
 // Sensor is reporting that it has started
@@ -425,7 +439,7 @@ function sendReport() {
   }).then(obj => {
     logger.info(JSON.stringify(obj));
   }).catch(err => {
-    console.error(err);
+    logger.error(err);
   });
 }
 // return object containing body of post request to be sent to SynergyCheck.com server

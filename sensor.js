@@ -21,7 +21,10 @@ const bufSize = 10 * 1024 * 1024;
 const buffer = Buffer.alloc(65535);
 
 var config; // loaded configuration file
-var samples = {} // by connectionId -> { charCount, packets, disconnected, lastMessageTimestamp }
+
+// this is re-initialized to empty object for each sample period
+var samples = {}; // by connectionId -> { charCount, packets, disconnected, lastMessageTimestamp }
+
 // TO DO - real logger!
 const logger = {
   info: function() { logger.info.apply(null, arguments); },
@@ -135,7 +138,7 @@ try {
     state.config[k] = config[k];
   });
 
-  // validate config.report.period, so it is ms report period
+  // validate config.report.period, it is ms report period
   if (typeof(config.monitor.sample) === 'string') {
     if (/^\d+$/.test(config.report.period)) {
       // assume ms
@@ -152,6 +155,17 @@ try {
       process.exit(1);
     }
   }
+
+  if (!Array.isArray(config.monitor.connections)) {
+    logger.error('missing config,monitor.connections array - nothing to monitor!');
+    process.exit(1);
+  }
+
+  if (typeof(config.agent.apiBase) !== 'string') {
+    logger.error('missing config.agent.apiBase');
+    process.exit(1);
+  }
+
   processConfigItem('verbose');
   if (state.verbose) {
     logger.info(JSON.stringify(config, null, '  '));
@@ -243,9 +257,42 @@ state.config.monitor.connections.forEach(conn => {
 const timer = setInterval(function() {
   const timestampISO = new Date().toISOString();
   logger.info(`time to report ${timestampISO}`);
+  report();
 
 }, state.monitor.sample); // ms between reporting
 
+let postReportUrl = `${state.config.agent.apiBase}sensor/report`;
+logger.info(`report to url: ${postReportUrl}`);
+
+// send report to the agent, and ready for next sample
+function report() {
+  let send = samples.map(s => {
+    return {
+      connectionId: s.connectionId,
+      charCount: s.charCount,
+      packetCount: s.packetCount,
+      lastMessageTimestamp: s.lastMessageTimestamp,
+      disconnected: s.disconnected
+    };
+  });
+
+  samples = {}; // reset. Will accumulate for new sampling period
+
+  request({
+    method: 'POST',
+    uri: postReportUrl,
+    body: send,
+    json: true // automatically stringifies body
+  }).then(obj => {
+    logger.info(JSON.stringify(obj));
+  }).catch(err => {
+    logger.error(err);
+  });
+}
+// Establish a monitor for a connection
+// Sets the filter string for the src and dst ip and the dst port.
+// Captures packet count, accumulates charCount of each pack
+// Captures timestamp of last packet
 function monitorConnection(conn) {
 
   const cap = new Cap(); // a new instance of Cap for each connection?  Else filter must be enlarged
@@ -255,7 +302,7 @@ function monitorConnection(conn) {
   const linkType = c.open(state.device, filter, bufSize, buffer);
   logger.info(`${conn.connectionId} -> linkType=${linkType}`);
 
-  cap.setMinBytes && c.setMinBytes(0); // windows only
+  cap.setMinBytes && c.setMinBytes(0); // windows only todo
 
   cap.on('packet', function(nbytes, trunc) {
     logger.info(`${conn.connectionId} -> ${new Date().toLocaleString()} packet: length ${nbytes} bytes, truncated? ${trunc ? 'yes' : 'no'}`);
@@ -306,7 +353,7 @@ function monitorConnection(conn) {
             sample = {
               connectionId: conn.connectionId,
               charCount: 0,
-              packetCount: 0
+              packetCount: 0,
               disconnected: false
             };
             samples[conn.connectionId] = sample;
