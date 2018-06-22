@@ -11,18 +11,37 @@
 // For deployment on Linux, require packages to be installed: ibpcap and libpcap-dev/libpcap-devel
 
 const commander = require('commander');
-const fs = require('fs');
-const Cap = require('cap').Cap;
-const decoders = require('cap').decoders;
-const PROTOCOL = decoders.PROTOCOL;
+const fs        = require('fs');
+const Cap       = require('cap').Cap;
+const decoders  = require('cap').decoders;
+const PROTOCOL  = decoders.PROTOCOL;
+const request    = require('request-promise-native');
 
-const c = new Cap();
-// const device = Cap.findDevice('192.168.1.5');
-var filter;
 const bufSize = 10 * 1024 * 1024;
 const buffer = Buffer.alloc(65535);
 
+var config; // loaded configuration file
+var samples = {} // by connectionId -> { charCount, packets, disconnected, lastMessageTimestamp }
+// TO DO - real logger!
+const logger = {
+  info: function() { logger.info.apply(null, arguments); },
+  error: function() { console.error.apply(null, arguments); }
+};
+
+const configKeys = [
+    'sensor', // object
+    'sensor.id', // required
+    'agent', // object
+    'agent.apiBase', // required url of agent to report to
+    'agent.apiKeys', // for security
+    'monitor', // object
+    'monitor.device', // required ethernet device to monitor
+    'monitor.sample', // milliseconds sample rate
+    'monitor.connections' // array of connection info
+];
+
 const commanderArgs = [
+    'config',
     'list',
     'find',
     'device',
@@ -36,11 +55,13 @@ const commanderArgs = [
 
 const state = {
   release: '0.0.1', // todo
+  configFile: 'sensor.json',
   find: '',
   filter: 'tcp and dst port ${this.port}', // can ref values in state object
   device: '192.168.1.5',
   port: 80,
   commandLine: {},
+  config: {},
   content: false,
   verbose: false,
   debug: false
@@ -48,6 +69,7 @@ const state = {
 commander
     .version(state.releas) // THIS IS WRONG!  IT MAY BE OVERRIDDEN BY config file value
     //.usage('[options] ...')
+    .option('-c, --config [value]', 'The configuration file, overrides "' + state.configFile + '"')
     .option('-l, --list','list devices on this machine.  Pick one and run again specifying --device xxxx')
     .option('-f, --find [value]','find first device with specified ip' + state.find + '"')
     .option('-d, --device [value]','The device name to monitor, overrides "' + state.device + '"')
@@ -58,6 +80,91 @@ commander
     .option('-b, --verbose', 'output verbose messages for debugging, overrides "' + state.verbose + '"')
     .option('-d, --debug', 'output debug messages for debugging, overrides "' + state.debug + '"')
     .parse(process.argv);
+
+// @param name - the name of the item in the state object
+// @param commanderProp - the optional commander (command line) argument name if different from name
+// #param configProp - optional configuration file prop name if different from name
+// Note - can be used for item that is not available on the command line, pass false for commanderProp
+function processConfigItem(name, commanderProp, configProp) {
+  if (!commanderProp && commanderProp !== false) {
+    commanderProp = name;
+  }
+  if (!configProp) {
+    configProp = name;
+  }
+  if (commanderProp !== false && commander[commanderProp]) {
+    logger.info(`Using command line parameter - ${commanderProp}, ${commander[commanderProp]}`);
+    state[name] = commander[commanderProp]; // command line overrides default
+  } else if (config[configProp]) {
+    logger.info(`Using config file parameter - ${configProp}, ${config[configProp]}`);
+    state[name] = config[configProp]; // config file overrides default
+  } else {
+    logger.info(`Using default parameter: - ${name}, ${state[name]}`);
+  }
+}
+// Copy specified command line arguments into state
+commanderArgs.forEach((k) => {
+  state.commandLine[k] = commander[k];
+});
+
+// Note - one cannot override the config file in the config file
+if (commander.config) {
+  logger.info(`Using command line parameter - config ${commander.config}`);
+  state.configFile = commander.config;
+} else {
+  logger.info(`default parameter - config ${state.configFile}`);
+}
+// Read the configuraton file
+try {
+  // read the file and parse it as JSON then don't need './filename.json', can just specify 'filename.json'
+  let configText = fs.readFileSync(state.configFile, 'utf8');
+  config = JSON.parse(configText);
+  // config = require(state.configFile); // using require to synchronously load JSON file parsed directly into an object
+
+  //------------ validate the properties in the config -------------------
+  ['sensor','agent','monitor'].forEach(name => {
+    if (typeof(config[name]) !== 'object') {
+      logger.error(`missing ${name} object in config file`);
+      process.exit(1);
+    }
+  });
+
+  // Copy original config file values into state.config
+  state.config = {};
+  Object.keys(config).forEach((k) => {
+    state.config[k] = config[k];
+  });
+
+  // validate config.report.period, so it is ms report period
+  if (typeof(config.monitor.sample) === 'string') {
+    if (/^\d+$/.test(config.report.period)) {
+      // assume ms
+      config.monitor.sample = Number.parseInt(config.monitor.sample);
+    } else {
+      // todo - recognize '10m', etc.
+      logger.error(`monitor.sample is not a positive integer "${config.monitor.sample}"`);
+      process.exit(1);
+    }
+  }
+  if (typeof(config.monitor.sample) === 'number') {
+    if (config.monitor.sample < 1000) {
+      logger.error('cannot accept monitor.sample < 1000 ms');
+      process.exit(1);
+    }
+  }
+  processConfigItem('verbose');
+  if (state.verbose) {
+    logger.info(JSON.stringify(config, null, '  '));
+  }
+} catch (ex1) {
+  logger.error(`Cannot load configuration file ${state.configFile}`);
+  if (commander.verbose) {
+    logger.error(ex1.toString());
+  }
+  logger.error(`exception loading config file "${state.configFile}": ${ex1}`);
+  logger.error('Exiting...');
+  process.exit(1);
+}
 
 // Copy specified command line arguments into state
 commanderArgs.forEach(function(k) {
@@ -71,12 +178,11 @@ if (commander.filter !== undefined) {
   state.filter = commander.filter;
 }
 if (commander.device !== undefined) {
-  state.device = commander.device;
-}
-if (commander.port !== undefined) {
-  state.port = commander.port;
+  // the ethernet device to monitor
+  state.monitor.device = commander.device;
 }
 if (commander.content !== undefined) {
+  // show packet content in log
   state.content = !!commander.content;
 }
 if (commander.verbose !== undefined) {
@@ -85,29 +191,29 @@ if (commander.verbose !== undefined) {
 if (commander.debug !== undefined) {
   state.debug = !!commander.debug;
 }
-
 if (state.debug) {
-  console.log(JSON.stringify(state, null, ' '));
+  logger.info(JSON.stringify(state, null, ' '));
 }
+// Can do a list or find a device given ip, else perform monitoring and reporting
 //====================  --list ==========================
 if (commander.list) {
   let devices = Cap.deviceList();
   devices.forEach(d => {
     if (d.flags) {
-      console.log(`${d.name} (${d.description}) flags=${d.flags} ...`);
+      logger.info(`${d.name} (${d.description}) flags=${d.flags} ...`);
     } else {
-      console.log(`${d.name} (${d.description})...`);
+      logger.info(`${d.name} (${d.description})...`);
     }
     if (d.addresses) {
       d.addresses.forEach(a => {
         if (a.addr) {
-          console.log(`    ${a.addr}`);
+          logger.info(`    ${a.addr}`);
         }
       });
     }
   });
   if (state.debug) {
-    console.log(JSON.stringify(Cap.deviceList(), null, '  '));
+    logger.info(JSON.stringify(Cap.deviceList(), null, '  '));
   }
   process.exit(0);
 }
@@ -119,68 +225,113 @@ if (state.find !== '') {
   } else {
     device = Cap.findDevice(state.find);
   }
-  console.log(`find "${state.find}"`);
+  logger.info(`find "${state.find}"`);
   if (device !== undefined) {
-    console.log(`Found device: ${device}`);
+    logger.info(`Found device: ${device}`);
   } else {
-    console.log(`device not found: "${state.find}"`)
+    logger.info(`device not found: "${state.find}"`)
   }
   process.exit(0);
 }
+
 //====================== monitoring =======================
-try {
-  filter = new Function('return `' + state.filter + '`;').apply(state);
-} catch (ex) {
-  console.error('failure to process filter \'' + state.filter + '\'');
-  console.error(ex);
-  process.exit(1);
-}
-// filter = `tcp and dst port ${state.port}`;
-console.log(`monitor device ${state.device} filter '${state.filter}'`);
-let linkType = c.open(state.device, filter, bufSize, buffer);
-console.log(`linkType=${linkType}`);
-
-c.setMinBytes && c.setMinBytes(0); // windows only
-
-c.on('packet', function(nbytes, trunc) {
-  console.log(`${new Date().toLocaleString()} packet: length ${nbytes} bytes, truncated? ${trunc ? 'yes' : 'no'}`);
-
-  // raw packet data === buffer.slice(0, nbytes)
-
-  if (linkType === 'ETHERNET') {
-    let ret = decoders.Ethernet(buffer);
-
-    if (ret.info.type === PROTOCOL.ETHERNET.IPV4) {
-      if (state.verbose) {
-        console.log('    Decoding IPv4 ...');
-      }
-
-      ret = decoders.IPV4(buffer, ret.offset);
-      console.log('    IPv4 info - from: ' + ret.info.srcaddr + ' to ' + ret.info.dstaddr);
-
-      if (ret.info.protocol === PROTOCOL.IP.TCP) {
-        let datalen = ret.info.totallen - ret.hdrlen;
-        if (state.verbose) {
-          console.log('    Decoding TCP ...');
-        }
-
-        ret = decoders.TCP(buffer, ret.offset);
-        console.log(`    TCP info - from port: ${ret.info.srcport} to port: ${ret.info.dstport} length ${datalen}`);
-        datalen -= ret.hdrlen;
-        if (state.content) {
-          console.log('    content: ' + buffer.toString('binary', ret.offset, ret.offset + datalen));
-        }
-      } else if (ret.info.protocol === PROTOCOL.IP.UDP) {
-        if (state.verbose) {
-          console.log('    Decoding UDP ...');
-        }
-
-        ret = decoders.UDP(buffer, ret.offset);
-        console.log('    UDP info - from port: ' + ret.info.srcport + ' to port: ' + ret.info.dstport);
-        console.log('    ' + buffer.toString('binary', ret.offset, ret.offset + ret.info.length));
-      } else
-        console.log('    Unsupported IPv4 protocol: ' + PROTOCOL.IP[ret.info.protocol]);
-    } else
-      console.log('    Unsupported Ethertype: ' + PROTOCOL.ETHERNET[ret.info.type]);
-  }
+state.config.monitor.connections.forEach(conn => {
+  // will update samples[connectionId]
+  monitorConnection(conn); // set up to monitor
 });
+
+const timer = setInterval(function() {
+  const timestampISO = new Date().toISOString();
+  logger.info(`time to report ${timestampISO}`);
+
+}, state.monitor.sample); // ms between reporting
+
+function monitorConnection(conn) {
+
+  const cap = new Cap(); // a new instance of Cap for each connection?  Else filter must be enlarged
+
+  const filter = `tcp and src host ${conn.src} and dst host ${conn.dst} and dst port ${conn.port}`;
+  logger.info(`${conn.connectionId} -> monitor device ${conn.device} filter '${filter}'`);
+  const linkType = c.open(state.device, filter, bufSize, buffer);
+  logger.info(`${conn.connectionId} -> linkType=${linkType}`);
+
+  cap.setMinBytes && c.setMinBytes(0); // windows only
+
+  cap.on('packet', function(nbytes, trunc) {
+    logger.info(`${conn.connectionId} -> ${new Date().toLocaleString()} packet: length ${nbytes} bytes, truncated? ${trunc ? 'yes' : 'no'}`);
+
+    // raw packet data === buffer.slice(0, nbytes)
+
+    if (linkType === 'ETHERNET') {
+      let ret = decoders.Ethernet(buffer);
+
+      if (ret.info.type === PROTOCOL.ETHERNET.IPV4) {
+        if (state.verbose) {
+          logger.info('    Decoding IPv4 ...');
+        }
+
+        ret = decoders.IPV4(buffer, ret.offset);
+        logger.info(`    IPv4 info - from: ${ret.info.srcaddr} to ${ret.info.dstaddr}`);
+
+        // verify filter works!
+        if (conn.src !== ret.info.srcaddr) {
+          logger.error(`${conn.connectionId} expecting src to be ${conn.src} but it is ${ret.info.srcaddr}`);
+        }
+        if (conn.dst !== ret.info.dstaddr) {
+          logger.error(`${conn.connectionId} expecting src to be ${conn.dst} but it is ${ret.info.dstaddr}`);
+        }
+
+        if (ret.info.protocol === PROTOCOL.IP.TCP) {
+          let datalen = ret.info.totallen - ret.hdrlen;
+          if (state.verbose) {
+            logger.info('    Decoding TCP ...');
+          }
+
+          ret = decoders.TCP(buffer, ret.offset);
+          logger.info(`    TCP info - from port: ${ret.info.srcport} to port: ${ret.info.dstport} length ${datalen}`);
+
+          if (conn.port !== ret.info.dstport) {
+            logger.error(`${conn.connectionId} expecting port to be ${conn.port} but it is ${ret.info.dstport}`);
+          }
+
+          datalen -= ret.hdrlen;
+          if (state.content) {
+            let content = buffer.toString('binary', ret.offset, ret.offset + datalen);
+            logger.info(`    content: ${content}`);
+          }
+
+          // by connectionId -> { charCount, packets, disconnected, lastMessageTimestamp }
+          let sample = samples[conn.connectionId];
+          if (!sample) {
+            sample = {
+              connectionId: conn.connectionId,
+              charCount: 0,
+              packetCount: 0
+              disconnected: false
+            };
+            samples[conn.connectionId] = sample;
+          }
+          sample.charCount += datalen;
+          sample.packetCount++;
+          sample.lastMessageTimestamp = new Date().toISOString();
+
+        } else if (ret.info.protocol === PROTOCOL.IP.UDP) {
+          if (state.verbose) {
+            logger.info('    Decoding UDP ...');
+          }
+
+          ret = decoders.UDP(buffer, ret.offset);
+          logger.info(`    UDP info - from port: ${ret.info.srcport} to port: ${ret.info.dstport}`);
+          if (state.content) {
+            let content = buffer.toString('binary', ret.offset, ret.offset + ret.info.length);
+            logger.info(`    ${content}`);
+          }
+        } else
+          logger.info(`    Unsupported IPv4 protocol: ${PROTOCOL.IP[ret.info.protocol]}`);
+      } else
+        logger.info(`    Unsupported Ethertype: ${PROTOCOL.ETHERNET[ret.info.type]}`);
+    } else {
+      logger.error(`    Unsupported linkType ${linkType}`);
+    }
+  });
+}

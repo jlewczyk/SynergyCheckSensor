@@ -1,11 +1,15 @@
 {
   "name": "trialAgent",
   "httpProtocol": "http",
-  "hostName": "192.168.1.6",
+  "hostName": "10.157.100.81",
   "xhostName": "10.157.100.71",
   "port": 19999,
   "synergyCheck": {
-    "api": "http://www.synergyCheck.com/api/v1/"
+    "apiBase": "http://localhost:8080/api/v1/",
+    "apiKeys": [
+      "fd3c36e1-fa93-438a-9f6e-5ef69427305a",
+      "7da420a0-22e8-446b-97a4-2cfc84d72989"
+    ]
   },
   "customerId": "6ea2967d-29f3-4dd3-a7ee-eb1b777ba20c",
   "report": {

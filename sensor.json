@@ -12,30 +12,36 @@
     "customerId": "6ea2967d-29f3-4dd3-a7ee-eb1b777ba20c"
   },
   "agent": {
-    "protocol": "https",
-    "host": "10.157.100.71",
-    "port": "443"
+    "apibase": "http://10.157.100.81:19999.api/v1/",
+    "apiKeys": [
+      "6ff8b366-36ea-429d-8ab5-6c21fff37485",
+      "59671f72-c20c-48dc-b096-709123150cdb"
+    ]
   },
   "monitor": {
     "device": "\\Device\\NPF_{2313E180-CE0B-445F-86AF-DE4ABE6B89FC}",
     "named": "Intel(R) Ethernet Connection I217-LM",
     "sample": 10000,
-    "report": 60000,
-    "host": "10.157.100.71",
     "connections": [
       {
         "type": "ip",
-        "src": "10.157.67.2",
-        "dst": "10.157.100.71",
+        "src": "10.157.100.85",
+        "dst": "10.157.100.81",
+        "xsrc": "192.168.1.7",
+        "xdst": "192.168.1.6",
         "port": "20000",
-        "connectionId": 47
+        "connectionId": 47,
+        "sensorId": "c9b1babb-2189-4d62-90a1-8376a6eac2b8"
       },
       {
         "type": "ip",
-        "src": "10.157.67.2",
-        "dst": "10.157.100.71",
+        "src": "10.157.100.85",
+        "dst": "10.157.100.81",
+        "xsrc": "192.168.1.7",
+        "xdst": "192.168.1.6",
         "port": "20001",
-        "connectionId": 53
+        "connectionId": 53,
+        "sensorId": "c9b1babb-2189-4d62-90a1-8376a6eac2b8"
       }
     ]
   }

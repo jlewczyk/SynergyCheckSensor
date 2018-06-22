@@ -9,7 +9,7 @@ const express    = require('express');
 const http       = require('http');
 const https      = require('https');
 const RateLimit  = require('express-rate-limit');
-const request    = require('request');
+const request    = require('request-promise-native');
 const mkdirp     = require('mkdirp');
 const fs         = require('fs');
 const path       = require('path');
@@ -20,8 +20,8 @@ const commander  = require('commander');
 
 // TO DO - real logger!
 const logger = {
-  info: function(x) { console.log.apply(arguments); },
-  error: function(x) { console.error.apply(arguments); }
+  info: function() { console.log.apply(null, arguments); },
+  error: function() { console.error.apply(null, arguments); }
 };
 
 const app = express();
@@ -61,7 +61,7 @@ const configKeys = [
     'httpProtocol', // 'http' or 'https'
     'hostName', // ip4 address, or dns name
     'port', // 1025 - 49151
-    'synergyCheck.api', // guid
+    'synergyCheck.apiBase', // for api calls to synergyCheck.com
     'customerId', // string
     'report.period', // integer >= 0
     'report.compress', // boolean
@@ -127,12 +127,10 @@ try {
   config = JSON.parse(configText);
   // config = require(state.configFile); // using require to synchronously load JSON file parsed directly into an object
 
-  // validate TODO
+  //------------ validate the properties in the config -------------------
   if (typeof(config.report) !== 'object') {
-    config.report = { compress: false, period: 10000 };
-  } else {
-    config.report.compress = !!config.report.compress;
-    config.report.period = config.report.period || 10000;
+    logger.error(`missing report object in config file`);
+    process.exit(1);
   }
 
   // Copy original config file values into state.config
@@ -140,6 +138,24 @@ try {
   Object.keys(config).forEach((k) => {
     state.config[k] = config[k];
   });
+
+  // validate config.report.period, so it is ms report period
+  if (typeof(config.report.period) === 'string') {
+    if (/^\d+$/.test(config.report.period)) {
+      // assume ms
+      config.report.period = Number.parseInt(config.report.period);
+    } else {
+      // todo - recognize '10m', etc.
+      logger.error(`report.period is not a positive integer "${config.report.period}"`);
+      process.exit(1);
+    }
+  }
+  if (typeof(config.report.period) === 'number') {
+    if (config.report.period < 1000) {
+      logger.error('cannot accept report.period < 1000 ms');
+      process.exit(1);
+    }
+  }
   processConfigItem('verbose');
   if (state.verbose) {
     logger.info(JSON.stringify(config, null, '  '));
@@ -180,7 +196,7 @@ try {
   process.exit(1);
 }
 
-console.log(JSON.stringify(state, null, '  '));
+logger.info(JSON.stringify(state, null, '  '));
 
 // Serve only the static files form the dist directory
 const distFolder = __dirname + '/dist';
@@ -213,17 +229,16 @@ app.post('/api/v1/sensor/report', function (req, res) {
   const errors = [];
   const obj = req.body;
   let sensor;
-  let date;
   let timestampDate;
-  let isoTimestamp;
+  let timestampIso;
 
   if (obj && typeof(obj.snapshot) === 'object') {
     // de-structure
     let {sensorId, customerId, timestamp, duration, connections} = obj.snapshot;
-    console.log(`sensorId=${sensorId}`);
-    console.log(`customerId=${customerId}`);
-    console.log(`timestamp=${timestamp}`);
-    console.log(`duration=${duration}`);
+    logger.info(`sensorId=${sensorId}`);
+    logger.info(`customerId=${customerId}`);
+    logger.info(`timestamp=${timestamp}`);
+    logger.info(`duration=${duration}`);
 
     // validate sensorId?
     if (typeof(sensorId) === 'undefined') {
@@ -250,13 +265,15 @@ app.post('/api/v1/sensor/report', function (req, res) {
         if (Number.isNaN(timestampDate.getTime())) {
           errors.push(`invalid format for timestamp "${timestamp}"`);
           timestampDate = undefined;
+          timestampIso = '?';
         } else {
           // so all the connection timestamps are the same
-          isoTimestamp = timestampDate.toISOString();
+          timestampIso = timestampDate.toISOString();
         }
       } catch (exDate) {
         errors.push(`invalid format for timestamp "${timestamp}"`);
         timestampDate = undefined;
+        timestampIso = '?';
       }
     }
 
@@ -264,12 +281,30 @@ app.post('/api/v1/sensor/report', function (req, res) {
 
     // process and validate each connection update in report
     if (connections && connections.length) {
-      connections.forEach(ic => {
-        let icId = '' + ic.connectionId; // ensure its a string (guids are string, but we may use >0 integers)
-        let charCount;
-        if (!/^\d+$/.test(icId)) {
-          errors.push(`connectionId not expected form '${icId}'`);
+      connections.forEach(ic => { // ic is incoming connection update
+        let icId; // connectionId that is a number
+        let charCount; // # of characters received in packets over sampling period
+        let packetCount; // # of packets received during sampling period
+        let connection; // found connection registered with icId
+
+        if (typeof(ic.connectionId) === 'string') {
+          if (/^\d+$/.test(ic.connectionId)) {
+            icId = Number.parseInt(ic.connectionId);
+          } else {
+            errors.push(`connectionId not in expected form '${ic.connectionId}'`);
+          }
+        } else if (typeof(ic.connectionId) === 'number') {
+          icId = ic.connectionId;
+        } else {
+          errors.push(`connectionId must be number "${ic.connectionId}"`)
         }
+        if (typeof(icId) !== 'undefined') {
+          connection = sensor.connections.find(c => c.connectionId === icId);
+          if (!connection) {
+            errors.push(`unregistered connectionId "${icId}"`);
+          }
+        }
+
         // process the character count being reported (if any)
         if (typeof(ic.charCount) !== 'undefined') {
           if (typeof(ic.charCount) === 'number') {
@@ -290,6 +325,27 @@ app.post('/api/v1/sensor/report', function (req, res) {
             errors.push(`expected number or parsable number string, got ${typeof(ic.charCount)} for connectionId ${icId}`);
           }
         }
+
+        if (typeof(ic.packetCount) !== 'undefined') {
+          if (typeof(ic.packetCount) === 'string') {
+            if (/^\d+$/.test(ic.packetCount)) {
+              packetCount = Number.parseInt(ic.packetCount);
+              if (packetCount < 0) {
+                errors.push(`packetCount must be >= 0, ${packetCount}`);
+              }
+            } else {
+              errors.push(`packetCount not expected form '${ic.packetCount}'`);
+            }
+          } else if (typeof(ic.packetCount) === 'number') {
+            packetCount = ic.packetCount;
+            if (packetCount < 0) {
+              errors.push(`packetCount must be >= 0, ${packetCount}`);
+            }
+          } else {
+            errors.push(`packetCount not expected form '${ic.packetCount}'`);
+          }
+        }
+
         if (typeof(ic.disconnected) !== 'undefined') {
           if (typeof(ic.disconnected) !== 'boolean') {
             errors.push(`disconnected if present must be boolean, but it is ${typeof(ic.disconnected)}`);
@@ -302,24 +358,28 @@ app.post('/api/v1/sensor/report', function (req, res) {
             if (charCount) {
               // have some volume of data to report
               connection.charCount += charCount;
-              connection.lastMessageTimestamp = isoTimestamp;
+              connection.lastMessageTimestamp = timestampIso;
+            }
+            if (packetCount) {
+              connection.packetCount += packetCount;
             }
             if (typeof(ic.disconnected) === 'boolean') {
               // sensor reported either true of false (when changed)
               // the last one reported in the reporting period will be passed on
               if (!!connection.disconnected !== ic.disconnected) {
-                connection.lastChangeInConnectionTimestamp = isoTimestamp;
+                connection.lastChangeInConnectionTimestamp = timestampIso;
               }
               connection.disconnected = ic.disconnected;
             }
-            connection.timestamps.push(isoTimestamp);
+            connection.timestamps.push(timestampIso);
           } else {
             connectionsAcc.push({
               connectionId: icId,
-              charCount: ic.charCount || 0,
+              charCount: charCount || 0,
+              packetCount: packetCount || 0,
               disconnected: ic.disconnected || false,
-              timestamps: [isoTimestamp],
-              lastMessage: ic.charCount ? isoTimestamp : undefined
+              timestamps: [timestampIso],
+              lastMessage: ic.charCount ? timestampIso : undefined
             });
           }
           res.status(200).send({ status: 'ok'});
@@ -346,6 +406,28 @@ app.get('/api/v1/sensor/priorReport', function(req, res) {
 app.get('/api/v1/sensor/nextReport', function(req, res) {
   res.send(getReport());
 });
+
+// start an interval timer to send updates to synergyCheck service in the cloud
+let timer = setInterval(function() {
+  logger.info(`time to send report! ${new Date().toISOString()}`);
+  sendReport();
+}, state.config.report.period);
+
+let postReportUrl = `${state.config.synergyCheck.apiBase}agent/report`;
+logger.info(`report to url: ${postReportUrl}`);
+
+function sendReport() {
+  request({
+    method: 'POST',
+    uri: postReportUrl,
+    body: getReport(),
+    json: true // automatically stringifies body
+  }).then(obj => {
+    logger.info(JSON.stringify(obj));
+  }).catch(err => {
+    console.error(err);
+  });
+}
 // return object containing body of post request to be sent to SynergyCheck.com server
 function getReport() {
   const snapshot = {
@@ -356,6 +438,7 @@ function getReport() {
       return {
         connectionId: o.connectionId,
         charCount: o.charCount || 0,
+        packetCount: o.packetCount || 0,
         lastMessageTimestamp: o.lastMessageTimestamp,
         disconnected: o.disconnected,
         lastChangeInConnectionTimestamp: o.lastChangeInConnectionTimestamp,
@@ -390,8 +473,8 @@ function getReport() {
 // Start the app by listening on the default Heroku port
 app.listen(port);
 
-console.log(`Server listening on port ${port}`);
-console.log(`swagger api docs available at ${state.protoHostPort}/api-docs`);
-console.log(`service api docs available at ${state.protoHostPort}/api/*`);
+logger.info(`Server listening on port ${port}`);
+logger.info(`swagger api docs available at ${state.protoHostPort}/api-docs`);
+logger.info(`service api docs available at ${state.protoHostPort}/api/*`);
 
 

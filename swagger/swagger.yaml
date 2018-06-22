@@ -161,6 +161,9 @@ definitions:
       charCount:
         type: integer
         format: int64
+      packetCount:
+        type: integer
+        format: int64
       disconnected:
         type: boolean 
   Ping:
