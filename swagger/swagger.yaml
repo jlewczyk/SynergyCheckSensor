@@ -58,6 +58,48 @@ paths:
       responses:
         405:
           description: "Invalid input"
+  /sensor/start:
+    post:
+      tags:
+      - "sensor"
+      summary: "sensor has started up"
+      description: "called when a sensor starts up"
+      operationId: "sensorStart"
+      consumes:
+      - "application/json"
+      produces:
+      - "application/json"
+      parameters:
+      - in: "body"
+        name: "body"
+        description: "sensor start data"
+        required: true
+        schema:
+          $ref: "#/definitions/SensorStart"
+      responses:
+        405:
+          description: "Invalid input"
+  /sensor/stop:
+    post:
+      tags:
+      - "sensor"
+      summary: "sensor has stopped"
+      description: "called when a sensor stops"
+      operationId: "sensorStop"
+      consumes:
+      - "application/json"
+      produces:
+      - "application/json"
+      parameters:
+      - in: "body"
+        name: "body"
+        description: "sensor stop data"
+        required: true
+        schema:
+          $ref: "#/definitions/SensorStop"
+      responses:
+        405:
+          description: "Invalid input"
 securityDefinitions:
   api_key:
     type: "apiKey"
@@ -70,6 +112,8 @@ definitions:
       snapshot:
         type: object
         properties:
+          sensorId:
+            type: string
           customerId:
             type: string
           timestamp:
@@ -95,6 +139,24 @@ definitions:
     type: object
     properties:
       timestamp:
+        type: string
+  SensorStart:
+    type: object
+    properties:
+      sensorId:
+        type: string
+      timestamp:
+        type: string
+      status:
+        type: string
+  SensorStop:
+    type: object
+    properties:
+      sensorId:
+        type: string
+      timestamp:
+        type: string
+      status:
         type: string
   ApiResponse:
     type: "object"

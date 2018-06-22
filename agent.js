@@ -20,8 +20,8 @@ const commander  = require('commander');
 
 // TO DO - real logger!
 const logger = {
-  info: function(x) { console.log(x); },
-  error: function(x) { console.error(x); }
+  info: function(x) { console.log.apply(arguments); },
+  error: function(x) { console.error.apply(arguments); }
 };
 
 const app = express();
@@ -52,6 +52,22 @@ let swaggerDocument;
 
 let connectionsAcc = []; // accumulating reports from sensors
 
+let lastReport = {}; // intiialize to empty - first time, everything is different
+
+// list of valid top level keys in config file
+// todo - add type, required, and deeper paths to validate config oontents
+const configKeys = [
+    'name', // string
+    'httpProtocol', // 'http' or 'https'
+    'hostName', // ip4 address, or dns name
+    'port', // 1025 - 49151
+    'synergyCheck.api', // guid
+    'customerId', // string
+    'report.period', // integer >= 0
+    'report.compress', // boolean
+    'sensors' // array of Sensor object
+    ];
+// list of valid arguments in command line
 const commanderArgs = [
   'config',
   'swagger',
@@ -104,10 +120,22 @@ if (commander.config) {
 } else {
   logger.info(`default parameter - config ${state.configFile}`);
 }
+// Read the configuraton file
 try {
-  // todo - alternate is to read the file and parse it as JSON then don't need './filename.json', can just specify 'filename.json'
-  config = require(state.configFile); // using require to synchronously load JSON file parsed directly into an object
-  // Copy original config file values into state
+  // read the file and parse it as JSON then don't need './filename.json', can just specify 'filename.json'
+  let configText = fs.readFileSync(state.configFile, 'utf8');
+  config = JSON.parse(configText);
+  // config = require(state.configFile); // using require to synchronously load JSON file parsed directly into an object
+
+  // validate TODO
+  if (typeof(config.report) !== 'object') {
+    config.report = { compress: false, period: 10000 };
+  } else {
+    config.report.compress = !!config.report.compress;
+    config.report.period = config.report.period || 10000;
+  }
+
+  // Copy original config file values into state.config
   state.config = {};
   Object.keys(config).forEach((k) => {
     state.config[k] = config[k];
@@ -121,7 +149,7 @@ try {
   if (commander.verbose) {
     logger.error(ex1.toString());
   }
-  logger.info('Since we use require to load the file, if a local file, prefix with "./"');
+  logger.info(`exception loading config file "${state.configFile}": ${ex1}`);
   logger.error('Exiting...');
   process.exit(1);
 }
@@ -154,7 +182,6 @@ try {
 
 console.log(JSON.stringify(state, null, '  '));
 
-
 // Serve only the static files form the dist directory
 const distFolder = __dirname + '/dist';
 if (!fs.existsSync(distFolder)) {
@@ -176,19 +203,69 @@ app.get('/api/v1/ping', function(req, res) {
   });
 });
 
+// state
+app.get('/api/v1/state', function(req, res) {
+  res.status(200).send(state);
+});
+//--------------------- Sensor reporting ---------------------------
 // Sensor reports data
 app.post('/api/v1/sensor/report', function (req, res) {
   const errors = [];
   const obj = req.body;
+  let sensor;
+  let date;
+  let timestampDate;
+  let isoTimestamp;
+
   if (obj && typeof(obj.snapshot) === 'object') {
-    const snapshot = obj.snapshot;
-    let {customerId, timestamp, duration, connections} = obj.snapshot;
+    // de-structure
+    let {sensorId, customerId, timestamp, duration, connections} = obj.snapshot;
+    console.log(`sensorId=${sensorId}`);
     console.log(`customerId=${customerId}`);
     console.log(`timestamp=${timestamp}`);
     console.log(`duration=${duration}`);
+
+    // validate sensorId?
+    if (typeof(sensorId) === 'undefined') {
+      errors.push('sensorId is required');
+    } else {
+      sensor = state.config.sensors.find(o => o.sensorId === sensorId)
+      if (!sensor) {
+        errors.push(`unrecognized sensorId "${sensorId}"`);
+      }
+    }
+    // validate customerId
+    if (typeof(customerId) === 'undefined') {
+      errors.push('customerId is required');
+    } else if (state.config.customerId !== customerId) {
+      errors.push(`unrecognized customerId "${customerId}"`);
+    }
+
+    // validate timestamp
+    if (typeof(timestamp) === 'undefined') {
+      errors.push('timestamp is required');
+    } else {
+      try {
+        timestampDate = new Date(timestamp);
+        if (Number.isNaN(timestampDate.getTime())) {
+          errors.push(`invalid format for timestamp "${timestamp}"`);
+          timestampDate = undefined;
+        } else {
+          // so all the connection timestamps are the same
+          isoTimestamp = date.toISOString();
+        }
+      } catch (exDate) {
+        errors.push(`invalid format for timestamp "${timestamp}"`);
+        timestampDate = undefined;
+      }
+    }
+
+    // validate duration
+
+    // process and validate each connection update in report
     if (connections && connections.length) {
       connections.forEach(ic => {
-        let icId = '' + ic.connectionId; // ensure its a string
+        let icId = '' + ic.connectionId; // ensure its a string (guids are string, but we may use >0 integers)
         let charCount;
         if (!/^\d+$/.test(icId)) {
           errors.push(`connectionId not expected form '${icId}'`);
@@ -225,17 +302,24 @@ app.post('/api/v1/sensor/report', function (req, res) {
             if (charCount) {
               // have some volume of data to report
               connection.charCount += charCount;
+              connection.lastMessageTimestamp = isoTimestamp;
             }
             if (typeof(ic.disconnected) === 'boolean') {
               // sensor reported either true of false (when changed)
               // the last one reported in the reporting period will be passed on
+              if (!!connection.disconnected !== ic.disconnected) {
+                connection.lastChangeInConnectionTimestamp = isoTimestamp;
+              }
               connection.disconnected = ic.disconnected;
             }
+            connection.timestamps.push(date.toISOString());
           } else {
             connectionsAcc.push({
               connectionId: icId,
               charCount: ic.charCount || 0,
-              disconnected: ic.disconnected || false
+              disconnected: ic.disconnected || false,
+              timestamps: [isoTimestamp],
+              lastMessage: ic.charCount ? isoTimestamp : undefined
             });
           }
           res.status(200).send({ status: 'ok'});
@@ -248,7 +332,57 @@ app.post('/api/v1/sensor/report', function (req, res) {
     res.status(412).send({ status: 'errors', errors: ['no snapshot property']});
   }
 });
-
+// Sensor is reporting that it has started
+app.put('/api/v1/sensor/start', function(req, res) {
+  res.state(500).send({ status: 'error', errors: ['not implemented']});
+});
+// Sensor is reporting that it has stopped
+app.put('/api/v1/sensor/stop', function(req, res) {
+  res.state(500).send({ status: 'error', errors: ['not implemented']});
+});
+app.get('/api/v1/sensor/lastReport', function(req, res) {
+  res.send(lastReport || {});
+});
+// return object containing body of post request to be sent to SynergyCheck.com server
+function getReport() {
+  const snapshot = {
+    customerId: state.config.customerId,
+    timestamp: new Date().toISOString(),
+    duration: state.config.report.period,
+    connections: connectionsAcc.map(o => {
+      return {
+        connectionId: o.connectionId,
+        charCount: o.charCount || 0,
+        lastMessageTimestamp: o.lastMessageTimestamp,
+        disconnected: o.disconnected,
+        lastChangeInConnectionTimestamp: o.lastChangeInConnectionTimestamp
+      };
+    })
+  };
+  if (state.config.report.compress) {
+    // remove reporting those connections with no change from last report
+    if (lastReport) {
+      snapshot.connections = snapshot.connections.filter(o => {
+        if (o.charCount) {
+          return true; // always report if has messages
+        }
+        // no messages, check if change in disconnected? status
+        if (typeof(o.disconnected) !== 'undefined') {
+          // we have a value for disconnected
+          let connectionPrior = lastReport.connections.find(c => c.connectionId === o.connectionId);
+          if (connectionPrior) {
+            return connectionPrior.disconnected !== o.disconnected;
+          }
+          // we had no value prior
+          return true;
+        }
+        // no value for disconnected, so no change assumed from last report
+        return false;
+      });
+    }
+  }
+  return snapshot;
+}
 // Start the app by listening on the default Heroku port
 app.listen(port);
 

@@ -1,18 +1,42 @@
 {
   "name": "trialAgent",
   "httpProtocol": "http",
-  "hostName": "10.157.100.71",
+  "hostName": "192.168.1.6",
+  "xhostName": "10.157.100.71",
   "port": 19999,
   "synergyCheck": {
     "api": "http://www.synergyCheck.com/api/v1/"
   },
+  "customerId": "6ea2967d-29f3-4dd3-a7ee-eb1b777ba20c",
   "report": {
     "period": 60000
   },
   "sensors": [
     {
       "name": "trialSensor",
-      "id": "c9b1babb-2189-4d62-90a1-8376a6eac2b8"
+      "id": "c9b1babb-2189-4d62-90a1-8376a6eac2b8",
+      "connections": [
+        {
+          "type": "ip",
+          "src": "192.168.1.7",
+          "xsrc": "10.157.67.2",
+          "dst": "192.168.1.6",
+          "xdst": "10.157.100.71",
+          "port": "20000",
+          "connectionId": 47,
+          "sensorId": "c9b1babb-2189-4d62-90a1-8376a6eac2b8"
+        },
+        {
+          "type": "ip",
+          "src": "192.168.1.7",
+          "xsrc": "10.157.67.2",
+          "dst": "192.168.1.6",
+          "xdst": "10.157.100.71",
+          "port": "20001",
+          "connectionId": 53,
+          "sensorId": "c9b1babb-2189-4d62-90a1-8376a6eac2b8"
+        }
+      ]
     }
   ]
 }

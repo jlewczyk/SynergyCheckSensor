@@ -8,7 +8,8 @@
       "when": "2018 Jun 21, 10:30 am EDT",
       "by": "Lewczyk,John"
     },
-    "heartbeat": 30000
+    "heartbeat": 30000,
+    "customerId": "6ea2967d-29f3-4dd3-a7ee-eb1b777ba20c"
   },
   "agent": {
     "protocol": "https",
