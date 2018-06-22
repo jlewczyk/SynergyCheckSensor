@@ -376,28 +376,30 @@ app.post('/api/v1/sensor/report', function (req, res) {
               }
               connection.disconnected = ic.disconnected;
             }
-            connection.timestamps.push(timestampIso);
+            // connection.timestamps.push(timestampIso);
           } else {
             connectionsAcc.push({
               connectionId: icId,
               charCount: charCount || 0,
               packetCount: packetCount || 0,
               disconnected: ic.disconnected || false,
-              timestamps: [timestampIso],
+              // timestamps: [timestampIso],
               lastMessage: ic.charCount ? timestampIso : undefined
             });
           }
-          res.status(200).send({ status: 'ok'});
-          if (state.debug) {
-            logger.info('ok');
-          }
-        } else {
-          res.status(412).send({ status: 'errors', errors: errors });
-          if (state.debug) {
-            logger.error('errors: ' + JSON.stringify(errors, null, '  '));
-          }
         }
       });
+      if (errors.length) {
+        res.status(412).send({ status: 'errors', errors: errors });
+        if (state.debug) {
+          logger.error('errors: ' + JSON.stringify(errors, null, '  '));
+        }
+      } else {
+        res.status(200).send({status: 'ok'});
+        if (state.debug) {
+          logger.info('ok');
+        }
+      }
     }
   } else {
     res.status(412).send({ status: 'errors', errors: ['no snapshot property']});
@@ -431,16 +433,20 @@ let postReportUrl = `${state.config.synergyCheck.apiBase}agent/report`;
 logger.info(`report to url: ${postReportUrl}`);
 
 function sendReport() {
+  let theReport = getReport();
   request({
     method: 'POST',
     uri: postReportUrl,
-    body: getReport(),
+    body: theReport,
     json: true // automatically stringifies body
   }).then(obj => {
     logger.info(JSON.stringify(obj));
   }).catch(err => {
     logger.error(err);
   });
+  if (state.verbose) {
+    logger.info(JSON.stringify(theReport, null, '  '));
+  }
 }
 // return object containing body of post request to be sent to SynergyCheck.com server
 function getReport() {

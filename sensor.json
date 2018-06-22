@@ -1,6 +1,6 @@
 {
   "sensor": {
-    "id": "c9b1babb-2189-4d62-90a1-8376a6eac2b8",
+    "sensorId": "c9b1babb-2189-4d62-90a1-8376a6eac2b8",
     "apiKeys": [
       "e19c15eb-e4dd-4cec-87f1-f249b03ad426"
     ],
@@ -12,7 +12,7 @@
     "customerId": "6ea2967d-29f3-4dd3-a7ee-eb1b777ba20c"
   },
   "agent": {
-    "apibase": "http://10.157.100.81:19999.api/v1/",
+    "apiBase": "http://10.157.100.81:19999/api/v1/",
     "apiKeys": [
       "6ff8b366-36ea-429d-8ab5-6c21fff37485",
       "59671f72-c20c-48dc-b096-709123150cdb"
@@ -29,7 +29,7 @@
         "dst": "10.157.100.81",
         "xsrc": "192.168.1.7",
         "xdst": "192.168.1.6",
-        "port": "20000",
+        "port": 20000,
         "connectionId": 47,
         "sensorId": "c9b1babb-2189-4d62-90a1-8376a6eac2b8"
       },
@@ -39,10 +39,12 @@
         "dst": "10.157.100.81",
         "xsrc": "192.168.1.7",
         "xdst": "192.168.1.6",
-        "port": "20001",
+        "port": 20001,
         "connectionId": 53,
         "sensorId": "c9b1babb-2189-4d62-90a1-8376a6eac2b8"
       }
+    ],
+    "x-connections": [
     ]
   }
 }

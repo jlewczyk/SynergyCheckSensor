@@ -23,13 +23,22 @@ const buffer = Buffer.alloc(65535);
 var config; // loaded configuration file
 
 // this is re-initialized to empty object for each sample period
-var samples = {}; // by connectionId -> { charCount, packets, disconnected, lastMessageTimestamp }
+var samples = []; // connection data { charCount, packets, disconnected, lastMessageTimestamp }
+var samplesIndex = {}; // by connectionId -> connection data
+
+var started = new Date();
+// used to generate unique transaction number
+// by combining this with the id of the sensor and a counter
+const startedMills = started.getTime();
+let transactionCounter = 0;
 
 // TO DO - real logger!
 const logger = {
-  info: function() { logger.info.apply(null, arguments); },
+  info: function() { console.info.apply(null, arguments); },
   error: function() { console.error.apply(null, arguments); }
 };
+
+logger.info(`SynergyCheck Sensor started ${started.toISOString()}`);
 
 const configKeys = [
     'sensor', // object
@@ -68,14 +77,14 @@ const state = {
   content: false,
   verbose: false,
   debug: false
-}
+};
 commander
     .version(state.releas) // THIS IS WRONG!  IT MAY BE OVERRIDDEN BY config file value
     //.usage('[options] ...')
     .option('-c, --config [value]', 'The configuration file, overrides "' + state.configFile + '"')
     .option('-l, --list','list devices on this machine.  Pick one and run again specifying --device xxxx')
     .option('-f, --find [value]','find first device with specified ip' + state.find + '"')
-    .option('-d, --device [value]','The device name to monitor, overrides "' + state.device + '"')
+    .option('-d, --device [value]','The device name to monitor, overrides config."' + state.device + '"')
     .option('-x, --filter [value]','filter expression' + state.filter + '"')
     .option('-p, --port [value]', 'port the web server is listening on, override default of 80 or 443 depending on http or https')
     .option('-b, --content', 'output packet message content for debugging, overrides "' + state.content + '"')
@@ -138,6 +147,15 @@ try {
     state.config[k] = config[k];
   });
 
+  // validate config.sensor
+  if (typeof(config.sensor.sensorId) !== 'string') {
+    logger.error('missing string sensor.sensorId');
+    process.exit(1);
+  }
+  if (typeof(config.sensor.customerId) !== 'string') {
+    logger.error('missing string sensor.customerId');
+    process.exit(1);
+  }
   // validate config.report.period, it is ms report period
   if (typeof(config.monitor.sample) === 'string') {
     if (/^\d+$/.test(config.report.period)) {
@@ -149,6 +167,7 @@ try {
       process.exit(1);
     }
   }
+  // validate config.monitor
   if (typeof(config.monitor.sample) === 'number') {
     if (config.monitor.sample < 1000) {
       logger.error('cannot accept monitor.sample < 1000 ms');
@@ -259,24 +278,45 @@ const timer = setInterval(function() {
   logger.info(`time to report ${timestampISO}`);
   report();
 
-}, state.monitor.sample); // ms between reporting
+}, state.config.monitor.sample); // ms between reporting
 
 let postReportUrl = `${state.config.agent.apiBase}sensor/report`;
 logger.info(`report to url: ${postReportUrl}`);
 
 // send report to the agent, and ready for next sample
 function report() {
-  let send = samples.map(s => {
-    return {
-      connectionId: s.connectionId,
-      charCount: s.charCount,
-      packetCount: s.packetCount,
-      lastMessageTimestamp: s.lastMessageTimestamp,
-      disconnected: s.disconnected
-    };
-  });
 
-  samples = {}; // reset. Will accumulate for new sampling period
+  // generate unique transaction number
+  // by combining this with the id of the sensor and a counter
+  transactionCounter++;
+  let transactionId = `${state.config.sensor.sensorId}-${startedMills}-${transactionCounter}`
+  state.lastTransactionId = transactionId;
+
+  let send = {
+    snapshot: {
+      sensorId: state.config.sensor.sensorId,
+      customerId: state.config.sensor.customerId,
+      timestamp: new Date().toISOString(),
+      transactionId: transactionId,
+      duration: 10000,
+      connections: samples.map(s => {
+        return {
+          connectionId: s.connectionId,
+          charCount: s.charCount,
+          packetCount: s.packetCount,
+          lastMessageTimestamp: s.lastMessageTimestamp,
+          disconnected: s.disconnected
+        };
+      })
+    }
+  };
+
+  if (state.debug) {
+    logger.info(JSON.stringify(send, null, '  '));
+  }
+
+  samples = []; // reset. Will accumulate for new sampling period
+  samplesIndex = {};
 
   request({
     method: 'POST',
@@ -299,10 +339,10 @@ function monitorConnection(conn) {
 
   const filter = `tcp and src host ${conn.src} and dst host ${conn.dst} and dst port ${conn.port}`;
   logger.info(`${conn.connectionId} -> monitor device ${conn.device} filter '${filter}'`);
-  const linkType = c.open(state.device, filter, bufSize, buffer);
+  const linkType = cap.open(state.config.monitor.device, filter, bufSize, buffer);
   logger.info(`${conn.connectionId} -> linkType=${linkType}`);
 
-  cap.setMinBytes && c.setMinBytes(0); // windows only todo
+  cap.setMinBytes && cap.setMinBytes(0); // windows only todo
 
   cap.on('packet', function(nbytes, trunc) {
     logger.info(`${conn.connectionId} -> ${new Date().toLocaleString()} packet: length ${nbytes} bytes, truncated? ${trunc ? 'yes' : 'no'}`);
@@ -348,7 +388,7 @@ function monitorConnection(conn) {
           }
 
           // by connectionId -> { charCount, packets, disconnected, lastMessageTimestamp }
-          let sample = samples[conn.connectionId];
+          let sample = samplesIndex[conn.connectionId];
           if (!sample) {
             sample = {
               connectionId: conn.connectionId,
@@ -356,7 +396,8 @@ function monitorConnection(conn) {
               packetCount: 0,
               disconnected: false
             };
-            samples[conn.connectionId] = sample;
+            samplesIndex[conn.connectionId] = sample;
+            samples.push(sample); // convenience array
           }
           sample.charCount += datalen;
           sample.packetCount++;

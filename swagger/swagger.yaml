@@ -1,141 +1,143 @@
-swagger: "2.0"
+swagger: '2.0'
 info:
-  description: "SynergyCheck agent API received requests to update from SynergyCheck sensors and accumulates
-  them and compresses them to report to the synergyCheck.com service"
-  version: "0.0.1"
-  title: "SynergyCheck agent API"
-  termsOfService: "http://swagger.io/terms/"
+  description: >-
+    SynergyCheck agent API received requests to update from SynergyCheck sensors
+    and accumulates them and compresses them to report to the synergyCheck.com
+    service
+  version: 0.0.1
+  title: SynergyCheck agent API
+  termsOfService: 'http://swagger.io/terms/'
   contact:
-    email: "apiteam@synergyCheck.com"
+    email: apiteam@synergyCheck.com
   license:
-    name: "Apache 2.0"
-    url: "http://www.apache.org/licenses/LICENSE-2.0.html"
-host: "___HOST_AND_PORT___"
-basePath: "/api/v1"
+    name: Apache 2.0
+    url: 'http://www.apache.org/licenses/LICENSE-2.0.html'
+host: ___HOST_AND_PORT___
+basePath: /api/v1
 tags:
-- name: "sensor"
-  description: "sensor facing API to receive updates"
-  externalDocs:
-    description: "Find out more"
-    url: "http://synergyCheck.com/info"
-- name: "agent"
-  description: "agent management"
+  - name: sensor
+    description: sensor facing API to receive updates
+    externalDocs:
+      description: Find out more
+      url: 'http://synergyCheck.com/info'
+  - name: agent
+    description: agent management
 schemes:
-- "http"
+  - http
 paths:
   /ping:
     get:
       tags:
-      - "agent"
-      summary: "responds with time of day"
-      description: "intended to indicate that agent is up and running"
-      operationId: "ping"
+        - agent
+      summary: responds with time of day
+      description: intended to indicate that agent is up and running
+      operationId: ping
       produces:
-      - "application/json"
+        - application/json
       responses:
-        200:
-          description: "successful operation"
+        '200':
+          description: successful operation
           schema:
-            $ref: "#/definitions/Ping"
+            $ref: '#/definitions/Ping'
   /sensor/report:
     post:
       tags:
-      - "sensor"
-      summary: "new data from sensor"
-      description: "calls with update of data captured by a sensor"
-      operationId: "sensorReport"
+        - sensor
+      summary: new data from sensor
+      description: calls with update of data captured by a sensor
+      operationId: sensorReport
       consumes:
-      - "application/json"
+        - application/json
       produces:
-      - "application/json"
+        - application/json
       parameters:
-      - in: "body"
-        name: "body"
-        description: "sensor data"
-        required: true
-        schema:
-          $ref: "#/definitions/SensorReport"
+        - in: body
+          name: body
+          description: sensor data
+          required: true
+          schema:
+            $ref: '#/definitions/SensorReport'
       responses:
-        405:
-          description: "Invalid input"
+        '405':
+          description: Invalid input
   /sensor/start:
     post:
       tags:
-      - "sensor"
-      summary: "sensor has started up"
-      description: "called when a sensor starts up"
-      operationId: "sensorStart"
+        - sensor
+      summary: sensor has started up
+      description: called when a sensor starts up
+      operationId: sensorStart
       consumes:
-      - "application/json"
+        - application/json
       produces:
-      - "application/json"
+        - application/json
       parameters:
-      - in: "body"
-        name: "body"
-        description: "sensor start data"
-        required: true
-        schema:
-          $ref: "#/definitions/SensorStart"
+        - in: body
+          name: body
+          description: sensor start data
+          required: true
+          schema:
+            $ref: '#/definitions/SensorStart'
       responses:
-        405:
-          description: "Invalid input"
+        '405':
+          description: Invalid input
   /sensor/stop:
     post:
       tags:
-      - "sensor"
-      summary: "sensor has stopped"
-      description: "called when a sensor stops"
-      operationId: "sensorStop"
+        - sensor
+      summary: sensor has stopped
+      description: called when a sensor stops
+      operationId: sensorStop
       consumes:
-      - "application/json"
+        - application/json
       produces:
-      - "application/json"
+        - application/json
       parameters:
-      - in: "body"
-        name: "body"
-        description: "sensor stop data"
-        required: true
-        schema:
-          $ref: "#/definitions/SensorStop"
+        - in: body
+          name: body
+          description: sensor stop data
+          required: true
+          schema:
+            $ref: '#/definitions/SensorStop'
       responses:
-        405:
-          description: "Invalid input"
+        '405':
+          description: Invalid input
   /sensor/priorReport:
     get:
       tags:
-      - sensor
+        - sensor
       summary: get prior sent report
       description: server keeps prior report posted
       operationId: sensorPriorReport
       produces:
-      - "application/json"
+        - application/json
       responses:
-        200:
-          description: "successful operation"
+        '200':
+          description: successful operation
           schema:
-            $ref: "#/definitions/SensorReport"
+            $ref: '#/definitions/SensorReport'
   /sensor/nextReport:
     get:
       tags:
-      - sensor
+        - sensor
       summary: get next report
       description: server accumulates report to be posted
       operationId: sensorNextReport
       produces:
-      - "application/json"
+        - application/json
       responses:
-        200:
-          description: "successful operation"
+        '200':
+          description: successful operation
           schema:
-            $ref: "#/definitions/SensorReport"
+            $ref: '#/definitions/SensorReport'
 securityDefinitions:
   api_key:
-    type: "apiKey"
-    name: "api_key"
-    in: "header"
+    type: apiKey
+    name: api_key
+    in: header
 definitions:
   SensorReport:
-    type: "object"
+    type: object
     properties:
       snapshot:
         type: object
@@ -146,12 +148,14 @@ definitions:
             type: string
           timestamp:
             type: string
+          transactionId:
+            type: string
           duration:
             type: string
           connections:
             type: array
             items:
-              $ref: "#/definitions/SensorConnection"
+              $ref: '#/definitions/SensorConnection'
   SensorConnection:
     type: object
     properties:
@@ -165,7 +169,7 @@ definitions:
         type: integer
         format: int64
       disconnected:
-        type: boolean 
+        type: boolean
   Ping:
     type: object
     properties:
@@ -190,16 +194,16 @@ definitions:
       status:
         type: string
   ApiResponse:
-    type: "object"
+    type: object
     properties:
       status:
-        type: "string"
+        type: string
       errors:
         type: array
         items:
           type: string
       message:
-        type: "string"
+        type: string
 externalDocs:
-  description: "Find out more about Swagger"
-  url: "http://swagger.io"
+  description: Find out more about Swagger
+  url: 'http://swagger.io'
