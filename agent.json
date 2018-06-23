@@ -1,17 +1,26 @@
 {
   "name": "trialAgent",
-  "httpProtocol": "http",
-  "hostName": "10.157.100.81",
-  "xhostName": "10.157.100.71",
+  "autoConfig": false,
   "port": 19999,
   "synergyCheck": {
+    "customerId": "6ea2967d-29f3-4dd3-a7ee-eb1b777ba20c",
     "apiBase": "http://localhost:8080/api/v1/",
     "apiKeys": [
       "fd3c36e1-fa93-438a-9f6e-5ef69427305a",
       "7da420a0-22e8-446b-97a4-2cfc84d72989"
     ]
   },
-  "customerId": "6ea2967d-29f3-4dd3-a7ee-eb1b777ba20c",
+  "agent": {
+    "created": {
+      "when": "2018 Jun 21, 10:30 am EDT",
+      "by": "Lewczyk,John"
+    },
+    "agentId": "194bb4a0-21e1-41ff-a736-8158c1760e95"
+  },
+  "swagger": {
+    "httpProtocol": "http",
+    "hostName": "192.168.1.6"
+  },
   "report": {
     "period": 60000
   },
@@ -21,24 +30,18 @@
       "sensorId": "c9b1babb-2189-4d62-90a1-8376a6eac2b8",
       "connections": [
         {
-          "type": "ip",
+          "kind": "ip",
           "src": "192.168.1.7",
-          "xsrc": "10.157.67.2",
           "dst": "192.168.1.6",
-          "xdst": "10.157.100.71",
           "port": "20000",
-          "connectionId": 47,
-          "sensorId": "c9b1babb-2189-4d62-90a1-8376a6eac2b8"
+          "connectionId": 47
         },
         {
-          "type": "ip",
+          "kind": "ip",
           "src": "192.168.1.7",
-          "xsrc": "10.157.67.2",
           "dst": "192.168.1.6",
-          "xdst": "10.157.100.71",
           "port": "20001",
-          "connectionId": 53,
-          "sensorId": "c9b1babb-2189-4d62-90a1-8376a6eac2b8"
+          "connectionId": 53
         }
       ]
     }

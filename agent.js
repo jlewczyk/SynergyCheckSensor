@@ -5,6 +5,21 @@
 // The sensors are programs that monitor the interfaces (tcp/ip traffic and/or file-based)
 // The sensor report data more often to the agent than the agent reports to synergyCheck.com
 
+// Auto configuration is the ability to just provide in the config file the following
+// agent.agentId
+// agent.autoConfigure
+// synergyCheck".customerId
+// synergyCheck.apiBase
+// synergyCheck.apiKeys
+//
+// after reading configuration file,
+// if the agent.autoConfigure is truthy
+// then make request to the synergyCheck server for configuration info
+// and use the result (is successful) to configure this agent.
+//
+// The information returned also can be used to auto configure any sensors
+// that are autoConfigured.
+
 const express    = require('express');
 const http       = require('http');
 const https      = require('https');
@@ -35,6 +50,7 @@ const app = express();
 
 const state = {
   release: '0.0.1',
+  autoConfig: false,
   commandLine: {},
   configFile: './agent.json',
   hostName: 'localhost', // name of host listening on (to inform swagger)
@@ -58,11 +74,13 @@ let priorReport = false; // intiialize to false so recognize first time
 // todo - add type, required, and deeper paths to validate config oontents
 const configKeys = [
     'name', // string
-    'httpProtocol', // 'http' or 'https'
-    'hostName', // ip4 address, or dns name
     'port', // 1025 - 49151
+    'swagger.swaggerFile', // a yaml file
+    'swagger.httpProtocol', // 'http' or 'https'
+    'swagger.hostName', // ip4 address, or dns name
+    'agent.agentId', // unique id for this agent
     'synergyCheck.apiBase', // for api calls to synergyCheck.com
-    'customerId', // string
+    'synergyCheck.customerId', // string
     'report.period', // integer >= 0
     'report.compress', // boolean
     'sensors' // array of Sensor object
@@ -79,33 +97,62 @@ const commanderArgs = [
 commander
     .version(state.releaseNumber) // THIS IS WRONG!  IT MAY BE OVERRIDDEN BY config file value
     //.usage('[options] ...')
-    .option('-c, --config [value]', 'The configuration file, overrides "' + state.configFile + '"')
-    .option('-s, --swagger [value]', 'the swagger specification, overrides "' + state.swaggerFile + '"')
-    .option('-s, --synergyCheck [value]','The protocol://host:port/api overrides "' + state.synegyCheck + '"')
-    .option('-p, --port [value]', 'port the web server is listening on, override default of 80 or 443 depending on http or https')
-    .option('-b, --verbose', 'output verbose messages for debugging')
-    .option('-d, --debug', 'output debug messages for debugging')
+    .option(`-c, --config [value]`, `The configuration file, overrides "${state.configFile}"`)
+    .option(`-a, --auto`, `perform auto configuration from synergyCheck server specified`)
+    .option(`-s, --swagger [value]`, `the swagger specification file, overrides "${state.swaggerFile}"`)
+    .option(`-s, --synergyCheck [value]`, `The protocol://host:port/api overrides "${state.synegyCheck}"`)
+    .option(`-p, --port [value]`, `port the web server is listening on, override default of "${state.port}"`)
+    .option(`-b, --verbose`, `output verbose messages for debugging`)
+    .option(`-d, --debug`, `output debug messages for debugging`)
     .parse(process.argv);
 
-// @param name - the name of the item in the state object
+// resolve dotted path into obj
+function resolvePath(obj, path) {
+  let paths = path.split('.');
+  let val = obj;
+  while (paths.length && typeof(obj) !== 'undefined') {
+    obj = obj[paths[0]];
+    paths.shift();
+  }
+  return obj;
+}
+// (state,'swagger.host', 'www.foo.com')
+// (state,'debug', commander.debug)
+function setPath(obj, path, val) {
+  let paths = path.split('.');
+  while (paths.length > 1 && typeof(obj) !== 'undefined') {
+    if (typeof(obj[paths[0]]) === 'undefined') {
+      obj = obj[paths[0]] = {};
+    } else {
+      obj = obj[paths[0]];
+    }
+    paths.shift();
+  }
+  if (typeof(obj) === 'object') {
+    obj[paths[0]] = val;
+  }
+  return obj;
+}
+
+// @param name - the name of the item in the state object, can be dotted path
 // @param commanderProp - the optional commander (command line) argument name if different from name
-// #param configProp - optional configuration file prop name if different from name
+// #param configProp - optional configuration file prop name if different from name, can be dotted path
 // Note - can be used for item that is not available on the command line, pass false for commanderProp
-function processConfigItem(name, commanderProp, configProp) {
+function processConfigItem(stateName, commanderProp, configProp) {
   if (!commanderProp && commanderProp !== false) {
-    commanderProp = name;
+    commanderProp = stateName;
   }
   if (!configProp) {
-    configProp = name;
+    configProp = stateName;
   }
   if (commanderProp !== false && commander[commanderProp]) {
     logger.info(`Using command line parameter - ${commanderProp}, ${commander[commanderProp]}`);
-    state[name] = commander[commanderProp]; // command line overrides default
-  } else if (config[configProp]) {
-    logger.info(`Using config file parameter - ${configProp}, ${config[configProp]}`);
-    state[name] = config[configProp]; // config file overrides default
+    setPath(state, stateName, commander[commanderProp]); // command line overrides default
+  } else if (resolvePath(config, configProp)) {
+    logger.info(`Using config file parameter - ${configProp}, ${resolvePath(config, configProp)}`);
+    setPath(state, stateName, resolvePath(config, configProp)); // config file overrides default
   } else {
-    logger.info(`Using default parameter: - ${name}, ${state[name]}`);
+    logger.info(`Using default parameter: - ${stateName}, ${resolvePath(state, stateName)}`);
   }
 }
 // Copy specified command line arguments into state
@@ -120,26 +167,72 @@ if (commander.config) {
 } else {
   logger.info(`default parameter - config ${state.configFile}`);
 }
-// Read the configuraton file
+// Read the configuration file
 try {
   // read the file and parse it as JSON then don't need './filename.json', can just specify 'filename.json'
   let configText = fs.readFileSync(state.configFile, 'utf8');
   config = JSON.parse(configText);
   // config = require(state.configFile); // using require to synchronously load JSON file parsed directly into an object
-
-  //------------ validate the properties in the config -------------------
-  if (typeof(config.report) !== 'object') {
-    logger.error(`missing report object in config file`);
-    process.exit(1);
+} catch (ex1) {
+  logger.error(`Cannot load configuration file ${state.configFile}`);
+  if (commander.verbose) {
+    logger.error(ex1.toString());
   }
+  logger.info(`exception loading config file "${state.configFile}": ${ex1}`);
+  logger.error('Exiting...');
+  process.exit(1);
+}
 
-  // Copy original config file values into state.config
-  state.config = {};
-  Object.keys(config).forEach((k) => {
-    state.config[k] = config[k];
+processConfigItem('autoConfig');
+
+if (state.autoConfig) {
+  ['synergyCheck', 'agent', 'swagger'].forEach(name => {
+    if (typeof(config[name]) !== 'object') {
+      logger.error(`for autoConfig, missing ${name} object in config file`);
+      process.exit(1);
+    }
   });
+} else {
+  ['synergyCheck', 'agent', 'swagger', 'report', 'sensors'].forEach(name => {
+    if (typeof(config[name]) !== 'object') {
+      logger.error(`for non-autoConfig, missing ${name} object in config file`);
+      process.exit(1);
+    }
+  });
+}
+processConfigItem('synergyCheck.apiBase', 'synergyCheck');
 
-  // validate config.report.period, so it is ms report period
+//------------ validate the properties in the config.agent -------------
+//------------------ validate config.agent.agentId ---------------------
+if (typeof(config.agent.agentId) === 'undefined') {
+  logger.error(`missing agent.agentId in config file`);
+  process.exit(1);
+}
+if (typeof(config.agent.agentId) === 'string' && config.agent.agentId.length === 0) {
+  logger.error(`agent.agentId in config file must be a non-empty string string`);
+  process.exit(1);
+}
+
+//------------ validate the properties in the config.sensors -----------
+// todo
+if (state.autoConfig) {
+  if (typeof(config.sensors) !== 'undefined') {
+    logger.info('config.sensors ignored when autoConfig is enabled. It will be auto configured');
+  }
+}
+
+// Copy original config file values into state.config
+state.config = {};
+Object.keys(config).forEach((k) => {
+  state.config[k] = config[k];
+});
+
+//------------ validate the properties in the config.report ------------
+if (state.autoConfig) {
+  if (typeof(config.report) !== 'undefined') {
+    logger.info('config.report ignored when autoConfig is enabled. It will be auto configured');
+  }
+} else {
   if (typeof(config.report.period) === 'string') {
     if (/^\d+$/.test(config.report.period)) {
       // assume ms
@@ -156,47 +249,29 @@ try {
       process.exit(1);
     }
   }
-  processConfigItem('verbose');
-  if (state.verbose) {
-    logger.info(JSON.stringify(config, null, '  '));
-  }
-} catch (ex1) {
-  logger.error(`Cannot load configuration file ${state.configFile}`);
-  if (commander.verbose) {
-    logger.error(ex1.toString());
-  }
-  logger.info(`exception loading config file "${state.configFile}": ${ex1}`);
-  logger.error('Exiting...');
-  process.exit(1);
 }
 
-processConfigItem('debug', 'debug', 'debug');
+processConfigItem('verbose');
+if (state.verbose) {
+  logger.info(JSON.stringify(config, null, '  '));
+}
 
-//------------- web server port number -------------------
-processConfigItem('httpProtocol');
-processConfigItem('hostName');
+processConfigItem('debug');
+
+//------------- web server for swagger docs needs to be self aware ------------
+processConfigItem('httpProtocol', false, 'swagger.httpProtocol');
+processConfigItem('hostName', false, 'swagger.hostName');
+
 processConfigItem('port');
 
-const port = process.env.PORT || state.port;
-state.protoHostPort = `${state.httpProtocol}://${state.hostName}:${port}`;
+// If port is controlled by OS environment variable
+state.port = process.env.PORT || state.port;
+state.protoHostPort = `${state.httpProtocol}://${state.hostName}:${state.port}`;
 
-//------------- swagger specification document -------------------
-processConfigItem('swaggerFile', 'swagger', 'swagger');
-try {
-  let yamlText = fs.readFileSync(state.swaggerFile, 'utf8');
-  yamlText = yamlText.replace(/___HOST_AND_PORT___/g, state.hostName + ':' + state.port)
-      .replace(/___PROTOCOL___/g, state.httpProtocol);
-  swaggerDocument = jsYaml.safeLoad(yamlText);
-} catch (ex2) {
-  logger.error('Cannot load the swagger document ', state.swaggerFile);
-  if (state.verbose) {
-    logger.error(ex2.toString());
-  }
-  logger.error('exiting...');
-  process.exit(1);
+
+if (state.verbose) {
+  logger.info(JSON.stringify(state, null, '  '));
 }
-
-logger.info(JSON.stringify(state, null, '  '));
 
 // Serve only the static files form the dist directory
 const distFolder = __dirname + '/dist';
@@ -207,8 +282,31 @@ if (!fs.existsSync(distFolder)) {
 app.use(express.static(distFolder));
 app.use(express.json());
 
-// Swagger SPA has its own static resources to be served which are found in the installed package
-app.use('/api-docs', swaggerUI.serve, swaggerUI.setup(swaggerDocument));
+//------------- swagger specification document -------------------
+processConfigItem('swaggerFile', 'swagger', 'swagger.swaggerFile');
+// when state.port is finalized, can set up to server swagger
+
+function prepareSwagger() {
+  try {
+    let swaggerText = fs.readFileSync(state.swaggerFile, 'utf8');
+    swaggerText = swaggerText.replace(/___HOST_AND_PORT___/g, state.hostName + ':' + state.port)
+        .replace(/___PROTOCOL___/g, state.httpProtocol);
+    if (/[.]json$/i.test(state.swaggerFile)) {
+      swaggerDocument = JSON.parse(swaggerText);
+    } else {
+      swaggerDocument = jsYaml.safeLoad(swaggerText);
+    }
+  } catch (ex2) {
+    logger.error('Cannot load the swagger document ', state.swaggerFile);
+    if (state.verbose) {
+      logger.error(ex2.toString());
+    }
+    logger.error('exiting...');
+    process.exit(1);
+  }
+  // Swagger SPA has its own static resources to be served which are found in the installed package
+  app.use('/api-docs', swaggerUI.serve, swaggerUI.setup(swaggerDocument));
+}
 
 //--------------------------- APIs -------------------------------
 
@@ -223,8 +321,9 @@ app.get('/api/v1/ping', function(req, res) {
 app.get('/api/v1/state', function(req, res) {
   res.status(200).send(state);
 });
+
 //--------------------- Sensor reporting ---------------------------
-// Sensor reports data
+// Sensor reports data to this agent
 app.post('/api/v1/sensor/report', function (req, res) {
   const errors = [];
   const obj = req.body;
@@ -232,6 +331,13 @@ app.post('/api/v1/sensor/report', function (req, res) {
   let timestampDate;
   let timestampIso;
 
+  if (state.autoConfig && !state.config.sensors) {
+    res.status(412).send({ status: 'error', errors: ['agent has not been auto configured'] });
+    if (state.debug) {
+      logger.error('errors: ' + JSON.stringify(errors, null, '  '));
+    }
+    return;
+  }
   if (obj && typeof(obj.snapshot) === 'object') {
     // de-structure
     let {sensorId, customerId, timestamp, duration, connections} = obj.snapshot;
@@ -257,7 +363,7 @@ app.post('/api/v1/sensor/report', function (req, res) {
     // validate customerId
     if (typeof(customerId) === 'undefined') {
       errors.push('customerId is required');
-    } else if (state.config.customerId !== customerId) {
+    } else if (state.config.synergyCheck.customerId !== customerId) {
       errors.push(`unrecognized customerId "${customerId}"`);
     }
 
@@ -282,7 +388,7 @@ app.post('/api/v1/sensor/report', function (req, res) {
       }
     }
 
-    // validate duration
+    // validate duration - todo
 
     // process and validate each connection update in report
     if (connections && connections.length) {
@@ -424,11 +530,16 @@ app.get('/api/v1/sensor/nextReport', function(req, res) {
 });
 
 // start an interval timer to send updates to synergyCheck service in the cloud
-let timer = setInterval(function() {
-  logger.info(`time to send report! ${new Date().toISOString()}`);
-  sendReport();
-}, state.config.report.period);
+function startReporting() {
+  let timer = setInterval(function () {
+    logger.info(`time to send report! ${new Date().toISOString()}`);
+    sendReport();
+  }, state.config.report.period);
+}
 
+if (!state.autoConfig) {
+  startReporting();
+}
 let postReportUrl = `${state.config.synergyCheck.apiBase}agent/report`;
 logger.info(`report to url: ${postReportUrl}`);
 
@@ -451,7 +562,8 @@ function sendReport() {
 // return object containing body of post request to be sent to SynergyCheck.com server
 function getReport() {
   const snapshot = {
-    customerId: state.config.customerId,
+    customerId: state.config.synergyCheck.customerId,
+    agentId: state.config.agent.agentId,
     timestamp: new Date().toISOString(),
     duration: state.config.report.period,
     connections: connectionsAcc.map(o => {
@@ -490,11 +602,47 @@ function getReport() {
   }
   return snapshot;
 }
-// Start the app by listening on the default Heroku port
-app.listen(port);
 
-logger.info(`Server listening on port ${port}`);
-logger.info(`swagger api docs available at ${state.protoHostPort}/api-docs`);
-logger.info(`service api docs available at ${state.protoHostPort}/api/*`);
+if (state.autoConfig) {
+  let autoConfigUrl = `${state.config.synergyCheck.apiBase}agent/autoConfig`;
+  request({
+    method: 'GET',
+    uri: autoConfigUrl,
+    qs: {
+      customerId: state.config.synergyCheck.customerId,
+      agentId: state.config.agent.agentId
+    },
+  }).then(obj => {
+    if (state.debug || state.verbose) {
+      logger.info(JSON.stringify(obj));
+    }
+    // todo - validate configuration data and incorporate
+
+    prepareSwagger(); // we have state.port
+    startListening();
+
+  }).catch(err => {
+    logger.error(err);
+  });
+  if (state.verbose) {
+    logger.info(`auto configuration call to ${autoConfigUrl}`);
+  }
+}
+if (state.autoConfig) {
+  if (state.debug || state.verbose) {
+    logger.info('autoConfig, so server not started until it received valid configuration');
+  }
+} else {
+  prepareSwagger(); // we have state.port
+  startListening();
+}
+
+function startListening() {
+  // Start the app by listening on the default Heroku port
+  app.listen(state.port);
+  logger.info(`Server listening on port ${state.port}`);
+  logger.info(`swagger api docs available at ${state.protoHostPort}/api-docs`);
+  logger.info(`service api docs available at ${state.protoHostPort}/api/*`);
+}
 
 
