@@ -8,7 +8,7 @@
 // Auto configuration is the ability to just provide in the config file the following
 // agent.agentId
 // agent.autoConfigure
-// synergyCheck".customerId
+// synergyCheck.customerId
 // synergyCheck.apiBase
 // synergyCheck.apiKeys
 //
@@ -51,14 +51,17 @@ const app = express();
 const state = {
   release: '0.0.1',
   autoConfig: false,
-  commandLine: {},
-  configFile: './agent.json',
-  hostName: 'localhost', // name of host listening on (to inform swagger)
-  httpProtocol: 'http', // protocol (to inform swagger)
-  port: 19999, // port to listen to requests from sensors
-  synergyCheck: 'http://synergyCheck.com/api/v1/',
-  swaggerFile: './swagger/swagger.yaml',
   commandLine: {}, // copy of arguments
+  configFile: './agent.json',
+  httpProtocol: 'http', // protocol (to inform swagger)
+  hostName: 'localhost', // name of host listening on (to inform swagger)
+  port: 19999, // port to listen to requests from sensors
+  synergyCheck: {
+    apiBase: 'http://synergyCheck.com/api/v1/'
+  },
+  swagger: {
+    swaggerFile: './swagger/agent.yaml',
+  },
   verbose: false,
   debug: false
 };
@@ -83,7 +86,7 @@ const configKeys = [
     'synergyCheck.customerId', // string
     'report.period', // integer >= 0
     'report.compress', // boolean
-    'sensors' // array of Sensor object
+    'sensors' // array of Sensor objects
     ];
 // list of valid arguments in command line
 const commanderArgs = [
@@ -99,8 +102,8 @@ commander
     //.usage('[options] ...')
     .option(`-c, --config [value]`, `The configuration file, overrides "${state.configFile}"`)
     .option(`-a, --auto`, `perform auto configuration from synergyCheck server specified`)
-    .option(`-s, --swagger [value]`, `the swagger specification file, overrides "${state.swaggerFile}"`)
-    .option(`-s, --synergyCheck [value]`, `The protocol://host:port/api overrides "${state.synegyCheck}"`)
+    .option(`-s, --swagger [value]`, `the swagger specification file, overrides "${state.swagger.swaggerFile}"`)
+    .option(`-s, --synergyCheck [value]`, `The protocol://host:port/api overrides "${state.synergyCheck.apiBase}"`)
     .option(`-p, --port [value]`, `port the web server is listening on, override default of "${state.port}"`)
     .option(`-b, --verbose`, `output verbose messages for debugging`)
     .option(`-d, --debug`, `output debug messages for debugging`)
@@ -183,7 +186,7 @@ try {
   process.exit(1);
 }
 
-processConfigItem('autoConfig');
+processConfigItem('autoConfig', 'auto');
 
 if (state.autoConfig) {
   ['synergyCheck', 'agent', 'swagger'].forEach(name => {
@@ -264,10 +267,10 @@ processConfigItem('hostName', false, 'swagger.hostName');
 
 processConfigItem('port');
 
-// If port is controlled by OS environment variable
+// Start the app by listening on the default Heroku port
+// as port is specified by OS environment variable
 state.port = process.env.PORT || state.port;
 state.protoHostPort = `${state.httpProtocol}://${state.hostName}:${state.port}`;
-
 
 if (state.verbose) {
   logger.info(JSON.stringify(state, null, '  '));
@@ -283,21 +286,21 @@ app.use(express.static(distFolder));
 app.use(express.json());
 
 //------------- swagger specification document -------------------
-processConfigItem('swaggerFile', 'swagger', 'swagger.swaggerFile');
+processConfigItem('swagger.swaggerFile', 'swagger', 'swagger.swaggerFile');
 // when state.port is finalized, can set up to server swagger
 
 function prepareSwagger() {
   try {
-    let swaggerText = fs.readFileSync(state.swaggerFile, 'utf8');
+    let swaggerText = fs.readFileSync(state.swagger.swaggerFile, 'utf8');
     swaggerText = swaggerText.replace(/___HOST_AND_PORT___/g, state.hostName + ':' + state.port)
         .replace(/___PROTOCOL___/g, state.httpProtocol);
-    if (/[.]json$/i.test(state.swaggerFile)) {
+    if (/[.]json$/i.test(state.swagger.swaggerFile)) {
       swaggerDocument = JSON.parse(swaggerText);
     } else {
       swaggerDocument = jsYaml.safeLoad(swaggerText);
     }
   } catch (ex2) {
-    logger.error('Cannot load the swagger document ', state.swaggerFile);
+    logger.error('Cannot load the swagger document ', state.swagger.swaggerFile);
     if (state.verbose) {
       logger.error(ex2.toString());
     }
@@ -409,7 +412,7 @@ app.post('/api/v1/sensor/report', function (req, res) {
         } else {
           errors.push(`connectionId must be number "${ic.connectionId}"`)
         }
-        if (typeof(icId) !== 'undefined') {
+        if (sensor && typeof(icId) !== 'undefined') {
           connection = sensor.connections.find(c => c.connectionId === icId);
           if (!connection) {
             errors.push(`unregistered connectionId "${icId}"`);
@@ -528,6 +531,49 @@ app.get('/api/v1/sensor/priorReport', function(req, res) {
 app.get('/api/v1/sensor/nextReport', function(req, res) {
   res.send(getReport());
 });
+app.get('/api/v1/sensor/autoConfig/{sensorId}', function(req, res) {
+  let errors = [];
+  const sensorId = req.params.sensorId;
+  const agentId = req.query.agentId;
+  const customerId = req.query.customerId;
+  logger.info(`/api/v1/sensor/autoConfig?sensorId=${sensorId}&agentId=${agentId}&customerId=${customerId}`);
+  // valudate customerId
+  if (typeof(customerId) === 'undefined') {
+    errors.push(`customerId is required`);
+  } else if (cusomterId !== state.config.synergyCheck.customerId) {
+    errors.push(`unknown customerId "${customerId}"`);
+  }
+  // todo - validate agentId
+  if (typeof(agentId) === 'undefined') {
+    errors.push(`agentId is required`);
+  } else if (agentId !== state.config.agent.agentId) {
+    errors.push(`unknown agentId "${agentId}"`);
+  }
+
+  if (typeof(sensorId) === 'undefined') {
+    errors.push(`sensorId is required`);
+  } else {
+    const sensor = state.config.sensors.find(s => s.sensorId = sensorId);
+    if (sensor) {
+      res.send({
+        sensorId: sensorId,
+        agentId: agentId,
+        customerId: customerId,
+        name: sensor.name,
+        version: sensor.version,
+        deviceName: sensor.deviceName,
+        device: sensor.device,
+        sampleRate: sensor.sampleRate,
+        connections: sensor.connections
+      }); // not found (for now, TODO)
+    } else {
+      errors.push('sensor not found');
+    }
+  }
+  if (errors.length) {
+    res.status(412).send({status: 'error', errors: errors});
+  }
+});
 
 // start an interval timer to send updates to synergyCheck service in the cloud
 function startReporting() {
@@ -638,7 +684,6 @@ if (state.autoConfig) {
 }
 
 function startListening() {
-  // Start the app by listening on the default Heroku port
   app.listen(state.port);
   logger.info(`Server listening on port ${state.port}`);
   logger.info(`swagger api docs available at ${state.protoHostPort}/api-docs`);

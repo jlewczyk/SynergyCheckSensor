@@ -1,0 +1,388 @@
+swagger: '2.0'
+info:
+  description: >-
+    SynergyCheck agent API received requests to update from SynergyCheck sensors
+    and accumulates them and compresses them to report to the synergyCheck.com
+    service
+  version: 0.0.1
+  title: SynergyCheck agent API
+  termsOfService: 'http://swagger.io/terms/'
+  contact:
+    email: apiteam@synergyCheck.com
+  license:
+    name: Apache 2.0
+    url: 'http://www.apache.org/licenses/LICENSE-2.0.html'
+host: ___HOST_AND_PORT___
+basePath: /api/v1
+tags:
+  - name: sensor
+    description: sensor facing API to receive updates
+    externalDocs:
+      description: Find out more
+      url: 'http://synergyCheck.com/info'
+  - name: agent
+    description: agent management
+schemes:
+  - http
+paths:
+  /ping:
+    get:
+      tags:
+        - agent
+      summary: responds with time of day
+      description: intended to indicate that agent is up and running
+      operationId: ping
+      produces:
+        - application/json
+      responses:
+        '200':
+          description: successful operation
+          schema:
+            $ref: '#/definitions/Ping'
+  /state:
+    get:
+      tags:
+        - agent
+      summary: responds with state of server
+      description: intended to inform with detail
+      operationId: state
+      produces:
+        - application/json
+      responses:
+        '200':
+          description: successful operation
+          schema:
+            $ref: '#/definitions/AboutState'
+  /sensor/report:
+    post:
+      tags:
+        - sensor
+      summary: new data from sensor
+      description: calls with update of data captured by a sensor
+      operationId: sensorReport
+      consumes:
+        - application/json
+      produces:
+        - application/json
+      parameters:
+        - in: body
+          name: body
+          description: sensor data
+          required: true
+          schema:
+            $ref: '#/definitions/SensorReport'
+      responses:
+        '405':
+          description: Invalid input
+          schema:
+            $ref: '#/definitions/ApiResponse'
+  /sensor/start:
+    post:
+      tags:
+        - sensor
+      summary: sensor has started up
+      description: called when a sensor starts up
+      operationId: sensorStart
+      consumes:
+        - application/json
+      produces:
+        - application/json
+      parameters:
+        - in: body
+          name: body
+          description: sensor start data
+          required: true
+          schema:
+            $ref: '#/definitions/SensorStart'
+      responses:
+        '405':
+          description: Invalid input
+  /sensor/stop:
+    post:
+      tags:
+        - sensor
+      summary: sensor has stopped
+      description: called when a sensor stops
+      operationId: sensorStop
+      consumes:
+        - application/json
+      produces:
+        - application/json
+      parameters:
+        - in: body
+          name: body
+          description: sensor stop data
+          required: true
+          schema:
+            $ref: '#/definitions/SensorStop'
+      responses:
+        '405':
+          description: Invalid input
+  /sensor/priorReport:
+    get:
+      tags:
+        - sensor
+      summary: get prior sent report
+      description: server keeps prior report posted
+      operationId: sensorPriorReport
+      produces:
+        - application/json
+      responses:
+        '200':
+          description: successful operation
+          schema:
+            $ref: '#/definitions/SensorReport'
+  /sensor/nextReport:
+    get:
+      tags:
+        - sensor
+      summary: get next report
+      description: server accumulates report to be posted
+      operationId: sensorNextReport
+      produces:
+      - application/json
+      responses:
+        '200':
+          description: successful operation
+          schema:
+            $ref: '#/definitions/SensorReport'
+  /sensor/autoConfig:
+    get:
+      tags:
+      - sensor
+      summary: get automatic configuration information for specified sensorId
+      description: something here
+      operationId: getSensorAutoConfig
+      parameters:
+      - name: sensorId
+        in: query
+        description: The id of the sensor requesting configuration
+        required: true
+        type: string
+      - name: agentId
+        in: query
+        description: The id of the SynergyCheck agent requesting configuration from
+        required: true
+        type: string
+      - name: customerId
+        in: query
+        description: foo
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        '200':
+          description: successful operation
+          schema:
+            $ref: '#/definitions/SensorAutoConfig'
+securityDefinitions:
+  api_key:
+    type: apiKey
+    name: api_key
+    in: header
+definitions:
+  SensorReport:
+    type: object
+    properties:
+      snapshot:
+        type: object
+        properties:
+          sensorId:
+            type: string
+          customerId:
+            type: string
+          timestamp:
+            type: string
+          transactionId:
+            type: string
+          duration:
+            type: string
+          connections:
+            type: array
+            items:
+              $ref: '#/definitions/SensorConnection'
+  SensorConnection:
+    type: object
+    properties:
+      connectionId:
+        type: integer
+        format: int64
+      charCount:
+        type: integer
+        format: int64
+      packetCount:
+        type: integer
+        format: int64
+      disconnected:
+        type: boolean
+  Ping:
+    type: object
+    properties:
+      timestamp:
+        type: string
+  SensorStart:
+    type: object
+    properties:
+      sensorId:
+        type: string
+      timestamp:
+        type: string
+      status:
+        type: string
+  SensorStop:
+    type: object
+    properties:
+      sensorId:
+        type: string
+      timestamp:
+        type: string
+      status:
+        type: string
+  ApiResponse:
+    type: object
+    properties:
+      status:
+        type: string
+      errors:
+        type: array
+        items:
+          type: string
+      message:
+        type: string
+  AboutState:
+    type: object
+    properties:
+      release:
+        type: string
+      autoConfig:
+        type: boolean
+      commandLine:
+        type: array
+        items:
+          type: string
+      configFile:
+        type: string
+      httpProtocol:
+        type: string
+      hostName:
+        type: string
+      port:
+        type: string
+      synergyCheck:
+        $ref: '#/definitions/SynergyCheckConfig'
+      agent:
+        $ref: '#/definitions/AgentConfig'
+      swagger:
+        $ref: '#/definitions/SwaggerConfig'
+      report:
+        type: object
+        properties:
+          period:
+            type: integer
+            format: int64
+      sensors:
+        type: array
+        items:
+          $ref: '#/definitions/SensorConfig'
+      verbose:
+        type: boolean
+      debug:
+        type: boolean
+      config:
+        type: object
+      protoHostPort:
+        type: object
+  SynergyCheckConfig:
+    type: object
+    properties:
+      apiBase:
+        type: string
+      apiKeys:
+        type: array
+        items:
+          type: string
+      customerId:
+        type: string
+  AgentConfig:
+    type: object
+    properties:
+      agentId:
+        type: string
+      created:
+        type: object
+  SwaggerConfig:
+    type: object
+    properties:
+      swaggerFile:
+        type: string
+      httpProtocol:
+        type: string
+      hostName:
+        type: string
+  SensorConfig:
+    type: object
+    properties:
+      name:
+        type: string
+      sensorId: # identify the sensor to configure
+        type: string
+      connections:
+        type: array
+        items:
+          $ref: '#/definitions/ConnectionConfig'
+  ConnectionConfig:
+    type: object
+    properties:
+      kind:
+        type: string
+      src:
+        type: string
+      dst:
+        type: string
+      port:
+        type: string
+      connectionId:
+        type: integer
+        format: int64
+  SensorAutoConfig:
+    type: object
+    properties:
+      name:
+        type: string
+      version:
+        type: integer
+        format: int64
+      agentId:
+        type: string
+      customerId:
+        type: string
+      device:
+        type: string
+      deviceName:
+        type: string
+      sampleRate:
+        type: integer
+        format: int64
+      connections:
+        type: array
+        items:
+          $ref: '#/definitions/SensorAutoConfigConnection'
+  SensorAutoConfigConnection:
+    type: object
+    properties:
+      kind:
+        type: string
+      src:
+        type: string
+      dst:
+        type: string
+      port:
+        type: integer
+        format: int64
+      connectionId:
+        type: integer
+        format: int64
+externalDocs:
+  description: Find out more about Swagger
+  url: 'http://swagger.io'

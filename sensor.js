@@ -11,17 +11,19 @@
 // For deployment on Linux, require packages to be installed: ibpcap and libpcap-dev/libpcap-devel
 
 const commander = require('commander');
-const fs        = require('fs');
-const Cap       = require('cap').Cap;
-const decoders  = require('cap').decoders;
-const PROTOCOL  = decoders.PROTOCOL;
-const request    = require('request-promise-native');
+const os = require('os');
+const fs = require('fs');
+const Cap = require('cap').Cap;
+const decoders = require('cap').decoders;
+const PROTOCOL = decoders.PROTOCOL;
+const request = require('request-promise-native');
 
 const bufSize = 10 * 1024 * 1024;
 const buffer = Buffer.alloc(65535);
 
-var config; // loaded configuration file
+var config; // loaded configuration file (see also state.config
 
+var monitored = {}; // key is `${src}|${dst}|${port}`
 // this is re-initialized to empty object for each sample period
 var samples = []; // connection data { charCount, packets, disconnected, lastMessageTimestamp }
 var samplesIndex = {}; // by connectionId -> connection data
@@ -34,40 +36,46 @@ let transactionCounter = 0;
 
 // TO DO - real logger!
 const logger = {
-  info: function() { console.info.apply(null, arguments); },
-  error: function() { console.error.apply(null, arguments); }
+  info: function () {
+    console.info.apply(null, arguments);
+  },
+  error: function () {
+    console.error.apply(null, arguments);
+  }
 };
 
 logger.info(`SynergyCheck Sensor started ${started.toISOString()}`);
 
 const configKeys = [
-    'sensor', // object
-    'sensor.id', // required
-    'agent', // object
-    'agent.apiBase', // required url of agent to report to
-    'agent.apiKeys', // for security
-    'monitor', // object
-    'monitor.device', // required ethernet device to monitor
-    'monitor.sample', // milliseconds sample rate
-    'monitor.connections' // array of connection info
+  'sensor', // object
+  'sensor.id', // required
+  'agent', // object
+  'agent.apiBase', // required url of agent to report to
+  'agent.apiKeys', // for security
+  'monitor', // object
+  'monitor.device', // required ethernet device to monitor
+  'monitor.sampleRate', // milliseconds sample rate
+  'monitor.connections' // array of connection info
 ];
 
 const commanderArgs = [
-    'config',
-    'list',
-    'find',
-    'device',
-    'filter',
-    'port',
-    'content',
-    'release',
-    'verbose',
-    'debug'
+  'config',
+  'info',
+  'list',
+  'find',
+  'device',
+  'filter',
+  'port',
+  'content',
+  'release',
+  'verbose',
+  'debug'
 ];
 
 const state = {
   release: '0.0.1', // todo
   configFile: 'sensor.json',
+  autoConfig: false, // complete configuration by requesting from agent
   find: '',
   filter: 'tcp and dst port ${this.port}', // can ref values in state object
   device: '192.168.1.5',
@@ -82,10 +90,12 @@ commander
     .version(state.releas) // THIS IS WRONG!  IT MAY BE OVERRIDDEN BY config file value
     //.usage('[options] ...')
     .option('-c, --config [value]', 'The configuration file, overrides "' + state.configFile + '"')
-    .option('-l, --list','list devices on this machine.  Pick one and run again specifying --device xxxx')
-    .option('-f, --find [value]','find first device with specified ip' + state.find + '"')
-    .option('-d, --device [value]','The device name to monitor, overrides config."' + state.device + '"')
-    .option('-x, --filter [value]','filter expression' + state.filter + '"')
+    .option(`-a, --auto`, `perform auto configuration from synergyCheck server specified`)
+    .option('-l, --info', 'display OS information on ethernet interfaces devices on this machine.')
+    .option('-l, --list', 'list devices on this machine.  Pick one and run again specifying --device xxxx')
+    .option('-f, --find [value]', 'find first device with specified ip' + state.find + '"')
+    .option('-d, --device [value]', 'The device name to monitor, overrides config."' + state.device + '"')
+    .option('-x, --filter [value]', 'filter expression' + state.filter + '"')
     .option('-p, --port [value]', 'port the web server is listening on, override default of 80 or 443 depending on http or https')
     .option('-b, --content', 'output packet message content for debugging, overrides "' + state.content + '"')
     .option('-r, --release [value]', 'The release of the server software , overrides "' + state.release + '"')
@@ -114,6 +124,7 @@ function processConfigItem(name, commanderProp, configProp) {
     logger.info(`Using default parameter: - ${name}, ${state[name]}`);
   }
 }
+
 // Copy specified command line arguments into state
 commanderArgs.forEach((k) => {
   state.commandLine[k] = commander[k];
@@ -133,13 +144,72 @@ try {
   config = JSON.parse(configText);
   // config = require(state.configFile); // using require to synchronously load JSON file parsed directly into an object
 
-  //------------ validate the properties in the config -------------------
-  ['sensor','agent','monitor'].forEach(name => {
-    if (typeof(config[name]) !== 'object') {
-      logger.error(`missing ${name} object in config file`);
-      process.exit(1);
+  //==================== --info ===========================
+  if (commander.info) {
+    logger.info('os.networkInterfaces...');
+    logger.info(JSON.stringify(os.networkInterfaces(), null, '  '));
+    process.exit(0);
+  }
+  // Can do a list or find a device given ip, else perform monitoring and reporting
+  //====================  --list ==========================
+  if (commander.list) {
+    let devices = Cap.deviceList();
+    devices.forEach(d => {
+      if (d.flags) {
+        logger.info(`${d.name} (${d.description}) flags=${d.flags} ...`);
+      } else {
+        logger.info(`${d.name} (${d.description})...`);
+      }
+      if (d.addresses) {
+        d.addresses.forEach(a => {
+          if (a.addr) {
+            logger.info(`    ${a.addr}`);
+          }
+        });
+      }
+    });
+    if (state.debug) {
+      logger.info(JSON.stringify(Cap.deviceList(), null, '  '));
     }
-  });
+    process.exit(0);
+  }
+  //====================  --find ==========================
+  if (state.find !== '') {
+    let device;
+    if (state.find === true) {
+      device = Cap.findDevice();
+    } else {
+      device = Cap.findDevice(state.find);
+    }
+    logger.info(`find "${state.find}"`);
+    if (device !== undefined) {
+      logger.info(`Found device: ${device}`);
+    } else {
+      logger.info(`device not found: "${state.find}"`)
+    }
+    process.exit(0);
+  }
+
+  //============= validate the properties in the config for monitor mode ============
+  processConfigItem('autoConfig', 'auto');
+  if (state.autoConfig) {
+    ['sensor', 'agent'].forEach(name => {
+      if (typeof(config[name]) !== 'object') {
+        logger.error(`for autoConfig, missing ${name} object in config file`);
+        process.exit(1);
+      }
+    });
+    if (typeof(config.monitor) !== 'undefined') {
+      logger.info('config.monitor ignored when autoConfig is enabled. It will be auto configured');
+    }
+  } else {
+    ['sensor', 'agent', 'monitor'].forEach(name => {
+      if (typeof(config[name]) !== 'object') {
+        logger.error(`for non-autoConfig, missing ${name} object in config file`);
+        process.exit(1);
+      }
+    });
+  }
 
   // Copy original config file values into state.config
   state.config = {};
@@ -156,34 +226,37 @@ try {
     logger.error('missing string sensor.customerId');
     process.exit(1);
   }
-  // validate config.report.period, it is ms report period
-  if (typeof(config.monitor.sample) === 'string') {
-    if (/^\d+$/.test(config.report.period)) {
-      // assume ms
-      config.monitor.sample = Number.parseInt(config.monitor.sample);
-    } else {
-      // todo - recognize '10m', etc.
-      logger.error(`monitor.sample is not a positive integer "${config.monitor.sample}"`);
-      process.exit(1);
+  if (!sensor.autoConfig) {
+    // validate config.report.period, it is ms report period
+    if (typeof(config.monitor.sampleRate) === 'string') {
+      if (/^\d+$/.test(config.report.period)) {
+        // assume ms
+        config.monitor.sampleRate = Number.parseInt(config.monitor.sampleRate);
+      } else {
+        // todo - recognize '10m', etc.
+        logger.error(`monitor.sampleRate is not a positive integer "${config.monitor.sampleRate}"`);
+        process.exit(1);
+      }
     }
-  }
-  // validate config.monitor
-  if (typeof(config.monitor.sample) === 'number') {
-    if (config.monitor.sample < 1000) {
-      logger.error('cannot accept monitor.sample < 1000 ms');
-      process.exit(1);
+    // validate config.monitor
+    if (typeof(config.monitor.sampleRate) === 'number') {
+      if (config.monitor.sampleRate < 1000) {
+        logger.error('cannot accept monitor.sampleRate < 1000 ms');
+        process.exit(1);
+      }
     }
-  }
 
-  if (!Array.isArray(config.monitor.connections)) {
-    logger.error('missing config,monitor.connections array - nothing to monitor!');
-    process.exit(1);
+    if (!Array.isArray(config.monitor.connections)) {
+      logger.error('missing config,monitor.connections array - nothing to monitor!');
+      process.exit(1);
+    }
   }
 
   if (typeof(config.agent.apiBase) !== 'string') {
     logger.error('missing config.agent.apiBase');
     process.exit(1);
   }
+  //todo: config.agent.apiKeys
 
   processConfigItem('verbose');
   if (state.verbose) {
@@ -200,7 +273,7 @@ try {
 }
 
 // Copy specified command line arguments into state
-commanderArgs.forEach(function(k) {
+commanderArgs.forEach(function (k) {
   state.commandLine[k] = commander[k];
 });
 
@@ -211,6 +284,10 @@ if (commander.filter !== undefined) {
   state.filter = commander.filter;
 }
 if (commander.device !== undefined) {
+  if (state.autoConfig) {
+    logging.error('do not specify device is autoConfig');
+    process.exit(1);
+  }
   // the ethernet device to monitor
   state.monitor.device = commander.device;
 }
@@ -227,60 +304,23 @@ if (commander.debug !== undefined) {
 if (state.debug) {
   logger.info(JSON.stringify(state, null, ' '));
 }
-// Can do a list or find a device given ip, else perform monitoring and reporting
-//====================  --list ==========================
-if (commander.list) {
-  let devices = Cap.deviceList();
-  devices.forEach(d => {
-    if (d.flags) {
-      logger.info(`${d.name} (${d.description}) flags=${d.flags} ...`);
-    } else {
-      logger.info(`${d.name} (${d.description})...`);
-    }
-    if (d.addresses) {
-      d.addresses.forEach(a => {
-        if (a.addr) {
-          logger.info(`    ${a.addr}`);
-        }
-      });
-    }
-  });
-  if (state.debug) {
-    logger.info(JSON.stringify(Cap.deviceList(), null, '  '));
-  }
-  process.exit(0);
-}
-//====================  --find ==========================
-if (state.find !== '') {
-  let device;
-  if (state.find === true) {
-    device = Cap.findDevice();
-  } else {
-    device = Cap.findDevice(state.find);
-  }
-  logger.info(`find "${state.find}"`);
-  if (device !== undefined) {
-    logger.info(`Found device: ${device}`);
-  } else {
-    logger.info(`device not found: "${state.find}"`)
-  }
-  process.exit(0);
-}
 
 //====================== monitoring =======================
-state.config.monitor.connections.forEach(conn => {
-  // will update samples[connectionId]
-  monitorConnection(conn); // set up to monitor
-});
+function startMonitoring() {
+  state.config.monitor.connections.forEach(conn => {
+    // will update samples[connectionId]
+    monitorConnection(conn); // set up to monitor
+  });
 
-const timer = setInterval(function() {
-  const timestampISO = new Date().toISOString();
-  logger.info(`time to report ${timestampISO}`);
-  report();
+  const timer = setInterval(function () {
+    const timestampISO = new Date().toISOString();
+    logger.info(`time to report ${timestampISO}`);
+    report();
 
-}, state.config.monitor.sample); // ms between reporting
+  }, state.config.monitor.sampleRate); // ms between reporting
+}
 
-let postReportUrl = `${state.config.agent.apiBase}sensor/report`;
+const postReportUrl = `${state.config.agent.apiBase}sensor/report`;
 logger.info(`report to url: ${postReportUrl}`);
 
 // send report to the agent, and ready for next sample
@@ -329,6 +369,13 @@ function report() {
     logger.error(err);
   });
 }
+
+function unMonitorConnection(conn) {
+  const mon = monitored[`${conn.src}|${conn.dst}|${conn.port}`];
+  if (mon) {
+    mon.cap.close();
+  }
+}
 // Establish a monitor for a connection
 // Sets the filter string for the src and dst ip and the dst port.
 // Captures packet count, accumulates charCount of each pack
@@ -337,6 +384,12 @@ function monitorConnection(conn) {
 
   const cap = new Cap(); // a new instance of Cap for each connection?  Else filter must be enlarged
 
+  // remember so can close if updated configuration obtained
+  monitored[`${conn.src}|${conn.dst}|${conn.port}`] = {
+    connection: conn,
+    cap: cap
+  };
+
   const filter = `tcp and src host ${conn.src} and dst host ${conn.dst} and dst port ${conn.port}`;
   logger.info(`${conn.connectionId} -> monitor device ${conn.device} filter '${filter}'`);
   const linkType = cap.open(state.config.monitor.device, filter, bufSize, buffer);
@@ -344,7 +397,7 @@ function monitorConnection(conn) {
 
   cap.setMinBytes && cap.setMinBytes(0); // windows only todo
 
-  cap.on('packet', function(nbytes, trunc) {
+  cap.on('packet', function (nbytes, trunc) {
     logger.info(`${conn.connectionId} -> ${new Date().toLocaleString()} packet: length ${nbytes} bytes, truncated? ${trunc ? 'yes' : 'no'}`);
 
     // raw packet data === buffer.slice(0, nbytes)
@@ -421,5 +474,38 @@ function monitorConnection(conn) {
     } else {
       logger.error(`    Unsupported linkType ${linkType}`);
     }
+  });
+}
+
+const getAutoConfigUrl = `${state.config.agent.apiBase}sensor/autoConfig`
+    + `?sensorId=${encodeURI(state.config.sensor.sensorId)}`
+    + `&agentId=${encodeURI(state.config.agent.agentId)}`
+    + `&customerId=${encodeURI(state.config.sensor.customerId)}`;
+
+function getConfig() {
+  return new Promise((fulfill, reject) {
+    if (state.verbose) {
+      logger.info(`GET ${getAutoConfigUrl}`);
+    }
+    request({
+      method: 'GET',
+      uri: getAutoConfigUrl
+    }).then(obj => {
+      if (state.verbose) {
+        logger.info(JSON.stringify(obj, null, '  '));
+      }
+      fulfill(obj);
+    }).catch(err => {
+      logger.error(err);
+      reject(err);
+    });
+  });
+}
+
+if (state.autoConfig) {
+  getConfig().then((obj) => {
+
+  },(err) => {
+
   });
 }

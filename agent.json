@@ -26,8 +26,12 @@
   },
   "sensors": [
     {
-      "name": "trialSensor",
       "sensorId": "c9b1babb-2189-4d62-90a1-8376a6eac2b8",
+      "name": "trialSensor",
+      "version": 1,
+      "device": "\\Device\\NPF_{2313E180-CE0B-445F-86AF-DE4ABE6B89FC}",
+      "deviceName": "Intel(R) Ethernet Connection I217-LM",
+      "sampleRate": 10000,
       "connections": [
         {
           "kind": "ip",

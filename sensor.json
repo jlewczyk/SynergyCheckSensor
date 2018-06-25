@@ -1,11 +1,11 @@
 {
   "sensor": {
     "sensorId": "c9b1babb-2189-4d62-90a1-8376a6eac2b8",
+    "name": "Canary",
     "created": {
       "when": "2018 Jun 21, 10:30 am EDT",
       "by": "Lewczyk,John"
     },
-    "heartbeat": 30000,
     "customerId": "6ea2967d-29f3-4dd3-a7ee-eb1b777ba20c"
   },
   "agent": {
@@ -16,15 +16,14 @@
       "59671f72-c20c-48dc-b096-709123150cdb"
     ]
   },
+  "heartbeat": 30000,
   "monitor": {
     "device": "\\Device\\NPF_{2313E180-CE0B-445F-86AF-DE4ABE6B89FC}",
-    "named": "Intel(R) Ethernet Connection I217-LM",
-    "sample": 10000,
+    "deviceName": "Intel(R) Ethernet Connection I217-LM",
+    "sampleRate": 10000,
     "connections": [
       {
-        "type": "ip",
-        "xsrc": "10.157.100.85",
-        "xdst": "10.157.100.81",
+        "kind": "ip",
         "src": "192.168.1.7",
         "dst": "192.168.1.6",
         "port": 20000,
@@ -32,9 +31,7 @@
         "sensorId": "c9b1babb-2189-4d62-90a1-8376a6eac2b8"
       },
       {
-        "type": "ip",
-        "xsrc": "10.157.100.85",
-        "xdst": "10.157.100.81",
+        "type": "kind",
         "src": "192.168.1.7",
         "dst": "192.168.1.6",
         "port": 20001,
