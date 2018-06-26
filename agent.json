@@ -19,35 +19,6 @@
   },
   "swagger": {
     "httpProtocol": "http",
-    "hostName": "10.157.100.80"
-  },
-  "x-report": {
-    "period": 60000
-  },
-  "x-sensors": [
-    {
-      "sensorId": "c9b1babb-2189-4d62-90a1-8376a6eac2b8",
-      "name": "trialSensor",
-      "version": 1,
-      "device": "\\Device\\NPF_{2313E180-CE0B-445F-86AF-DE4ABE6B89FC}",
-      "deviceName": "Intel(R) Ethernet Connection I217-LM",
-      "sampleRate": 10000,
-      "connections": [
-        {
-          "kind": "ip",
-          "src": "10.157.100.80",
-          "dst": "10.157.100.81",
-          "port": "20000",
-          "connectionId": 47
-        },
-        {
-          "kind": "ip",
-          "src": "10.157.100.80",
-          "dst": "10.157.100.81",
-          "port": "20001",
-          "connectionId": 53
-        }
-      ]
-    }
-  ]
+    "hostName": "10.157.100.73"
+  }
 }
