@@ -4,11 +4,13 @@
 // Upon start, make started call to concentrator agent
 // Upon shutdown (expected or not) make ended call to concentrator agent
 //
-// Uses packet monitoring library (windows *nix compatible)
+// Uses packet monitoring library (windows & *nix compatible)
 // from https://github.com/mscdex/cap
+// For Windows, require WinPcap https://www.winpcap.org (free)
+// or Npcap https://nmap.org/npcap which has $20K one time license!)
 //
 // Note for Windows, required VS2015 C++ to install as it compiled withe a VS project.
-// For deployment on Linux, require packages to be installed: ibpcap and libpcap-dev/libpcap-devel
+// For deployment on Linux, require packages `to be installed: ibpcap and libpcap-dev/libpcap-devel
 
 const commander = require('commander');
 const os = require('os');
@@ -316,6 +318,9 @@ function startMonitoring() {
   //   // will update samples[connectionId]
   //   monitorConnection(conn); // set up to monitor
   // });
+  if (state.verbose) {
+    logger.info(`monitor ${JSON.stringify(state.config.monitor, null, '  ')}`);
+  }
   resetMonitoring(existingConnections, state.config.monitor.connections)
   // remember what we just set up
   existingConnections = state.config.monitor.connections;
@@ -442,6 +447,8 @@ function monitorConnection(conn) {
   cap.on('packet', function (nbytes, trunc) {
     logger.info(`${conn.connectionId} -> ${new Date().toLocaleString()} packet: length ${nbytes} bytes, truncated? ${trunc ? 'yes' : 'no'}`);
 
+    let error;
+    const errors = [];
     // raw packet data === buffer.slice(0, nbytes)
 
     if (linkType === 'ETHERNET') {
@@ -459,73 +466,81 @@ function monitorConnection(conn) {
 
         // verify filter works!
         if (conn.src !== ipv4.info.srcaddr) {
-          logger.error(`${conn.connectionId} expecting src to be ${conn.src} but it is ${ipv4.info.srcaddr}`);
+          error = `${conn.connectionId} expecting src to be ${conn.src} but it is ${ipv4.info.srcaddr}`;
+          errors.push(error);
         }
         if (conn.dst !== ipv4.info.dstaddr) {
-          logger.error(`${conn.connectionId} expecting src to be ${conn.dst} but it is ${ipv4.info.dstaddr}`);
+          error = `${conn.connectionId} expecting src to be ${conn.dst} but it is ${ipv4.info.dstaddr}`;
+          errors.push(error);
         }
 
-        if (ipv4.info.protocol === PROTOCOL.IP.TCP) {
-          let datalen = ipv4.info.totallen - ipv4.hdrlen;
-          if (state.debug) {
-            logger.info('    Decoding TCP ...');
-          }
-
-          let tcp = decoders.TCP(buffer, ipv4.offset);
-          if (state.debug || state.verbose) {
-            logger.info(`    TCP info - from port: ${tcp.info.srcport} to port: ${tcp.info.dstport} length ${datalen}`);
-          }
-
-          if (conn.port !== tcp.info.dstport) {
-            logger.error(`    ${conn.connectionId} expecting port to be ${conn.port} but it is ${tcp.info.dstport}`);
-          }
-
-          datalen -= tcp.hdrlen;
-          if (state.content) {
-            let content = buffer.toString('binary', tcp.offset, tcp.offset + datalen);
-            if (state.verbose) {
-              logger.info(`    content: ${content}`);
+        if (!errors.length) {
+          if (ipv4.info.protocol === PROTOCOL.IP.TCP) {
+            let datalen = ipv4.info.totallen - ipv4.hdrlen;
+            if (state.debug) {
+              logger.info('    Decoding TCP ...');
             }
-          }
 
-          if (!state.debug && !state.verbose) {
-            logger.info(`    IPv4 TCP from ${ipv4.info.srcaddr}:${tcp.info.srcport} to ${ipv4.info.dstaddr}:${tcp.info.dstport} length=${datalen}`);
-          }
-            // by connectionId -> { charCount, packets, disconnected, lastMessageTimestamp }
-          let sample = samplesIndex[conn.connectionId];
-          if (!sample) {
-            sample = {
-              connectionId: conn.connectionId,
-              charCount: 0,
-              packetCount: 0,
-              disconnected: false
-            };
-            samplesIndex[conn.connectionId] = sample;
-            samples.push(sample); // convenience array
-          }
-          sample.charCount += datalen;
-          sample.packetCount++;
-          sample.lastMessageTimestamp = new Date().toISOString();
-
-        } else if (ipv4.info.protocol === PROTOCOL.IP.UDP) {
-          if (state.verbose || state.debug) {
-            logger.info('    Decoding UDP ...');
-          }
-
-          let udp = decoders.UDP(buffer, ipv4.offset);
-          if (state.debug || state.verbose) {
-            logger.info(`    UDP info - from port: ${udp.info.srcport} to port: ${udp.info.dstport}`);
-          }
-          if (state.content) {
-            let content = buffer.toString('binary', udp.offset, udp.offset + udp.info.length);
+            let tcp = decoders.TCP(buffer, ipv4.offset);
             if (state.debug || state.verbose) {
-              logger.info(`    ${content}`);
+              logger.info(`    TCP info - from port: ${tcp.info.srcport} to port: ${tcp.info.dstport} length ${datalen}`);
             }
+
+            if (conn.port !== tcp.info.dstport) {
+              logger.error(`    ${conn.connectionId} expecting port to be ${conn.port} but it is ${tcp.info.dstport}`);
+            }
+
+            datalen -= tcp.hdrlen;
+            if (state.content) {
+              let content = buffer.toString('binary', tcp.offset, tcp.offset + datalen);
+              if (state.verbose) {
+                logger.info(`    content: ${content}`);
+              }
+            }
+
+            if (!state.debug && !state.verbose) {
+              logger.info(`    IPv4 TCP from ${ipv4.info.srcaddr}:${tcp.info.srcport} to ${ipv4.info.dstaddr}:${tcp.info.dstport} length=${datalen}`);
+            }
+            // by connectionId -> { charCount, packets, disconnected, lastMessageTimestamp }
+            let sample = samplesIndex[conn.connectionId];
+            if (!sample) {
+              sample = {
+                connectionId: conn.connectionId,
+                charCount: 0,
+                packetCount: 0,
+                disconnected: false
+              };
+              samplesIndex[conn.connectionId] = sample;
+              samples.push(sample); // convenience array
+            }
+            sample.charCount += datalen;
+            sample.packetCount++;
+            sample.lastMessageTimestamp = new Date().toISOString();
+
+          } else if (ipv4.info.protocol === PROTOCOL.IP.UDP) {
+            if (state.verbose || state.debug) {
+              logger.info('    Decoding UDP ...');
+            }
+
+            let udp = decoders.UDP(buffer, ipv4.offset);
+            if (state.debug || state.verbose) {
+              logger.info(`    UDP info - from port: ${udp.info.srcport} to port: ${udp.info.dstport}`);
+            }
+            if (state.content) {
+              let content = buffer.toString('binary', udp.offset, udp.offset + udp.info.length);
+              if (state.debug || state.verbose) {
+                logger.info(`    ${content}`);
+              }
+            }
+          } else {
+            logger.info(`    Unsupported IPv4 protocol: ${PROTOCOL.IP[ipv4.info.protocol]}`);
           }
-        } else
-          logger.info(`    Unsupported IPv4 protocol: ${PROTOCOL.IP[ipv4.info.protocol]}`);
-      } else
-        logger.info(`    Unsupported Ethertype: ${PROTOCOL.ETHERNET[eth.info.type]}`);
+        } else {
+          errors.forEach(error => logger.error(error));
+        }
+      } else {
+          logger.info(`    Unsupported Ethertype: ${PROTOCOL.ETHERNET[eth.info.type]}`);
+        }
     } else {
       logger.error(`    Unsupported linkType ${linkType}`);
     }

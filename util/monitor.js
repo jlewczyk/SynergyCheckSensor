@@ -31,7 +31,7 @@ const commanderArgs = [
 const state = {
   release: '0.0.1', // todo
   find: '',
-  filter: 'tcp and dst port ${this.port}', // can ref values in state object
+  filter: 'tcp', //'tcp and dst port ${this.port}', // can ref values in state object
   device: '192.168.1.5',
   port: 80,
   commandLine: {},
