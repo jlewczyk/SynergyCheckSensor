@@ -42,36 +42,41 @@ const logger = {
 const app = express();
 
 // todo - logging
-// api's
-// /api/v1/sensor/start
-// /api/v1/sensor/stop
-// /api/v1/sensor/heartbeat
-// /api/v1/sensor/report
+
+let config; // contents of configuration file
+let swaggerDocument;
+
+let started = new Date();
+// used to generate unique transaction number
+// by combining this with the id of the sensor and a counter
+const startedMills = started.getTime();
+let transactionCounter = 0;
+
+let sensorsAcc = []; // list of sensors supplying daa
+let connectionsAcc = []; // accumulating reports from sensors
+
+let priorReport = false; // intiialize to false so recognize first time
 
 const state = {
   release: '0.0.1',
   autoConfig: false,
   commandLine: {}, // copy of arguments
   configFile: './agent.json',
+  autoConfigUrl: undefined,
   httpProtocol: 'http', // protocol (to inform swagger)
   hostName: 'localhost', // name of host listening on (to inform swagger)
   port: 19999, // port to listen to requests from sensors
+  lastTransactionId: '',
   synergyCheck: {
     apiBase: 'http://synergyCheck.com/api/v1/'
   },
   swagger: {
     swaggerFile: './swagger/agent.yaml',
   },
+  started: started.toISOString(),
   verbose: false,
   debug: false
 };
-
-let config; // contents of configuration file
-let swaggerDocument;
-
-let connectionsAcc = []; // accumulating reports from sensors
-
-let priorReport = false; // intiialize to false so recognize first time
 
 // list of valid top level keys in config file
 // todo - add type, required, and deeper paths to validate config oontents
@@ -344,12 +349,6 @@ app.post('/api/v1/sensor/report', function (req, res) {
   if (obj && typeof(obj.snapshot) === 'object') {
     // de-structure
     let {sensorId, customerId, timestamp, duration, connections} = obj.snapshot;
-    if (state.verbose) {
-      logger.info(`sensorId=${sensorId}`);
-      logger.info(`customerId=${customerId}`);
-      logger.info(`timestamp=${timestamp}`);
-      logger.info(`duration=${duration}`);
-    }
     if (state.debug) {
       logger.info(JSON.stringify(obj, null, '  '));
     }
@@ -467,6 +466,12 @@ app.post('/api/v1/sensor/report', function (req, res) {
         }
 
         if (errors.length === 0) {
+
+          // note the sensor contributing to the next report
+          if (sensorsAcc.indexOf(sensorId) === -1) {
+            sensorsAcc.push(sensorId);
+          }
+
           let connection = connectionsAcc.find(o => o.connectionId === icId);
           if (connection) {
             if (charCount) {
@@ -531,16 +536,16 @@ app.get('/api/v1/sensor/priorReport', function(req, res) {
 app.get('/api/v1/sensor/nextReport', function(req, res) {
   res.send(getReport());
 });
-app.get('/api/v1/sensor/autoConfig/{sensorId}', function(req, res) {
+app.get('/api/v1/sensor/autoConfig', function(req, res) {
   let errors = [];
-  const sensorId = req.params.sensorId;
+  const sensorId = req.query.sensorId;
   const agentId = req.query.agentId;
   const customerId = req.query.customerId;
   logger.info(`/api/v1/sensor/autoConfig?sensorId=${sensorId}&agentId=${agentId}&customerId=${customerId}`);
-  // valudate customerId
+  // validate customerId
   if (typeof(customerId) === 'undefined') {
     errors.push(`customerId is required`);
-  } else if (cusomterId !== state.config.synergyCheck.customerId) {
+  } else if (customerId !== state.config.synergyCheck.customerId) {
     errors.push(`unknown customerId "${customerId}"`);
   }
   // todo - validate agentId
@@ -553,7 +558,7 @@ app.get('/api/v1/sensor/autoConfig/{sensorId}', function(req, res) {
   if (typeof(sensorId) === 'undefined') {
     errors.push(`sensorId is required`);
   } else {
-    const sensor = state.config.sensors.find(s => s.sensorId = sensorId);
+    const sensor = state.config.sensors.find(s => s.sensorId === sensorId);
     if (sensor) {
       res.send({
         sensorId: sensorId,
@@ -583,9 +588,6 @@ function startReporting() {
   }, state.config.report.period);
 }
 
-if (!state.autoConfig) {
-  startReporting();
-}
 let postReportUrl = `${state.config.synergyCheck.apiBase}agent/report`;
 logger.info(`report to url: ${postReportUrl}`);
 
@@ -604,14 +606,25 @@ function sendReport() {
   if (state.verbose) {
     logger.info(JSON.stringify(theReport, null, '  '));
   }
+  // remember what you just sent
+  priorReport = theReport;
+
 }
 // return object containing body of post request to be sent to SynergyCheck.com server
 function getReport() {
+  // generate unique transaction number
+  // by combining this with the id of the sensor and a counter
+  transactionCounter++;
+  let transactionId = `${state.config.agent.agentId}|${startedMills}|${transactionCounter}`
+  state.lastTransactionId = transactionId;
+
   const snapshot = {
     customerId: state.config.synergyCheck.customerId,
     agentId: state.config.agent.agentId,
+    transactionId: transactionId,
     timestamp: new Date().toISOString(),
     duration: state.config.report.period,
+    sensors: sensorsAcc.slice(0),
     connections: connectionsAcc.map(o => {
       return {
         connectionId: o.connectionId,
@@ -624,6 +637,9 @@ function getReport() {
       };
     })
   };
+  connectionsAcc = []; // reset accumulator for next report
+  sensorsAcc = [];
+
   if (state.config.report.compress) {
     // remove reporting those connections with no change from last report
     if (priorReport) {
@@ -650,28 +666,50 @@ function getReport() {
 }
 
 if (state.autoConfig) {
-  let autoConfigUrl = `${state.config.synergyCheck.apiBase}agent/autoConfig`;
+  const errors = [];
+  state.autoConfigUrl = `${state.config.synergyCheck.apiBase}agent/autoConfig`;
   request({
     method: 'GET',
-    uri: autoConfigUrl,
+    uri: state.autoConfigUrl,
     qs: {
       customerId: state.config.synergyCheck.customerId,
       agentId: state.config.agent.agentId
     },
+    json: true // parse body
   }).then(obj => {
     if (state.debug || state.verbose) {
-      logger.info(JSON.stringify(obj));
+      logger.info(`autoConfig data is ${JSON.stringify(obj, null, '  ')}`);
     }
     // todo - validate configuration data and incorporate
+    if (obj.customerId !== state.config.synergyCheck.customerId) {
+      errors.push(`expected customerId to be ${state.config.synergyCheck.customerId} but received ${obj.customerId}`);
+    }
+    if (obj.agentId !== state.config.agent.agentId) {
+      errors.push(`expected agentId to be ${state.config.agent.agentId} but received ${obj.agentid}`);
+    }
 
-    prepareSwagger(); // we have state.port
-    startListening();
+    if (errors.length === 0) {
+
+      state.port = obj.port; // todo - validate
+      state.protoHostPort = `${state.httpProtocol}://${state.hostName}:${state.port}`;
+
+      state.config.report = obj.report; // todo - validate
+      state.config.sensors = obj.sensors; // todo - validate
+
+      prepareSwagger(); // we have state.port
+      startListening();
+      startReporting();
+    }
+    if (errors.length) {
+      logger.error(`Errors detected on incoming data from ${state.autoConfigUrl}`);
+      errors.forEach(e => { logger.error(e); });
+    }
 
   }).catch(err => {
-    logger.error(err);
+    logger.error(`error on GET ${state.autoConfigUrl}, err=${err}`);
   });
   if (state.verbose) {
-    logger.info(`auto configuration call to ${autoConfigUrl}`);
+    logger.info(`auto configuration call GET ${state.autoConfigUrl}`);
   }
 }
 if (state.autoConfig) {
@@ -681,6 +719,7 @@ if (state.autoConfig) {
 } else {
   prepareSwagger(); // we have state.port
   startListening();
+  startReporting();
 }
 
 function startListening() {

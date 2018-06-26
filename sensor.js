@@ -23,7 +23,9 @@ const buffer = Buffer.alloc(65535);
 
 var config; // loaded configuration file (see also state.config
 
-var monitored = {}; // key is `${src}|${dst}|${port}`
+var monitored = {}; // key is `${src}|${dst}|${port}` -> { connection, cap }
+// for a short window, existingConnections may not equal state.config.monitor.connections
+var existingConnections = []; // what is currently being monitored
 // this is re-initialized to empty object for each sample period
 var samples = []; // connection data { charCount, packets, disconnected, lastMessageTimestamp }
 var samplesIndex = {}; // by connectionId -> connection data
@@ -76,6 +78,8 @@ const state = {
   release: '0.0.1', // todo
   configFile: 'sensor.json',
   autoConfig: false, // complete configuration by requesting from agent
+  getAutoConfigUrl: '', // when performing autoConfig fetch
+  postReportUrl: '', // when reporting sensor data to agent
   find: '',
   filter: 'tcp and dst port ${this.port}', // can ref values in state object
   device: '192.168.1.5',
@@ -83,6 +87,7 @@ const state = {
   commandLine: {},
   config: {},
   content: false,
+  started: started.toISOString(),
   verbose: false,
   debug: false
 };
@@ -226,7 +231,7 @@ try {
     logger.error('missing string sensor.customerId');
     process.exit(1);
   }
-  if (!sensor.autoConfig) {
+  if (!state.autoConfig) {
     // validate config.report.period, it is ms report period
     if (typeof(config.monitor.sampleRate) === 'string') {
       if (/^\d+$/.test(config.report.period)) {
@@ -307,11 +312,15 @@ if (state.debug) {
 
 //====================== monitoring =======================
 function startMonitoring() {
-  state.config.monitor.connections.forEach(conn => {
-    // will update samples[connectionId]
-    monitorConnection(conn); // set up to monitor
-  });
+  // state.config.monitor.connections.forEach(conn => {
+  //   // will update samples[connectionId]
+  //   monitorConnection(conn); // set up to monitor
+  // });
+  resetMonitoring(existingConnections, state.config.monitor.connections)
+  // remember what we just set up
+  existingConnections = state.config.monitor.connections;
 
+  // initiate reporting
   const timer = setInterval(function () {
     const timestampISO = new Date().toISOString();
     logger.info(`time to report ${timestampISO}`);
@@ -320,8 +329,8 @@ function startMonitoring() {
   }, state.config.monitor.sampleRate); // ms between reporting
 }
 
-const postReportUrl = `${state.config.agent.apiBase}sensor/report`;
-logger.info(`report to url: ${postReportUrl}`);
+state.postReportUrl = `${state.config.agent.apiBase}sensor/report`;
+logger.info(`report to url: ${state.postReportUrl}`);
 
 // send report to the agent, and ready for next sample
 function report() {
@@ -329,7 +338,7 @@ function report() {
   // generate unique transaction number
   // by combining this with the id of the sensor and a counter
   transactionCounter++;
-  let transactionId = `${state.config.sensor.sensorId}-${startedMills}-${transactionCounter}`
+  let transactionId = `${state.config.sensor.sensorId}|${startedMills}|${transactionCounter}`
   state.lastTransactionId = transactionId;
 
   let send = {
@@ -360,7 +369,7 @@ function report() {
 
   request({
     method: 'POST',
-    uri: postReportUrl,
+    uri: state.postReportUrl,
     body: send,
     json: true // automatically stringifies body
   }).then(obj => {
@@ -370,11 +379,44 @@ function report() {
   });
 }
 
-function unMonitorConnection(conn) {
-  const mon = monitored[`${conn.src}|${conn.dst}|${conn.port}`];
-  if (mon) {
-    mon.cap.close();
+// compares old set of connections (empty if first time) with the
+// new set of connection definitions,
+// using the index of monitored caps (connections), which is empty if first time)
+function resetMonitoring(oldConnections, newConnections) {
+  let newOnes = newConnections.filter(conn => {
+    return !monitored[`${conn.src}|${conn.dst}|${conn.port}`];
+  });
+  if (state.debug) {
+    logger.info(`newOnes: ${JSON.stringify(newOnes, null, '  ')}`);
   }
+  let existingOnes = newConnections.filter(conn => {
+    return monitored[`${conn.src}|${conn.dst}|${conn.port}`];
+  });
+  if (state.debug) {
+    logger.info(`existingOnes: ${JSON.stringify(existingOnes, null, '  ')}`);
+  }
+  let removeThese = oldConnections.filter(oc => {
+    return !newConnections.find(nc => {
+      return nc.src === oc.src && nc.dst === oc.dst && nc.port === oc.port;
+    })
+  });
+  if (state.debug) {
+    logger.info(`removeThese: ${JSON.stringify(removeThese, null, '  ')}`);
+  }
+  // if existing connections monitored and they are NOT in the new set of connections
+  // then close them.
+  removeThese.forEach(oc => {
+    let monitored =  monitored[`${oc.src}|${oc.dst}|${oc.port}`];
+    if (monitored) {
+      monitored.cap.close();
+    } else {
+      throw `expected to find monitored: ${oc.src}|${oc.dst}|${oc.port}`;
+    }
+  });
+  newOnes.forEach(conn => {
+    // will update samples[connectionId]
+    monitorConnection(conn); // set up to monitor
+  });
 }
 // Establish a monitor for a connection
 // Sets the filter string for the src and dst ip and the dst port.
@@ -403,44 +445,53 @@ function monitorConnection(conn) {
     // raw packet data === buffer.slice(0, nbytes)
 
     if (linkType === 'ETHERNET') {
-      let ret = decoders.Ethernet(buffer);
+      let eth = decoders.Ethernet(buffer);
 
-      if (ret.info.type === PROTOCOL.ETHERNET.IPV4) {
-        if (state.verbose) {
+      if (eth.info.type === PROTOCOL.ETHERNET.IPV4) {
+        if (state.debug) {
           logger.info('    Decoding IPv4 ...');
         }
 
-        ret = decoders.IPV4(buffer, ret.offset);
-        logger.info(`    IPv4 info - from: ${ret.info.srcaddr} to ${ret.info.dstaddr}`);
+        let ipv4 = decoders.IPV4(buffer, eth.offset);
+        if (state.debug || state.verbose) {
+          logger.info(`    IPv4 info - from: ${ipv4.info.srcaddr} to ${ipv4.info.dstaddr}`);
+        }
 
         // verify filter works!
-        if (conn.src !== ret.info.srcaddr) {
-          logger.error(`${conn.connectionId} expecting src to be ${conn.src} but it is ${ret.info.srcaddr}`);
+        if (conn.src !== ipv4.info.srcaddr) {
+          logger.error(`${conn.connectionId} expecting src to be ${conn.src} but it is ${ipv4.info.srcaddr}`);
         }
-        if (conn.dst !== ret.info.dstaddr) {
-          logger.error(`${conn.connectionId} expecting src to be ${conn.dst} but it is ${ret.info.dstaddr}`);
+        if (conn.dst !== ipv4.info.dstaddr) {
+          logger.error(`${conn.connectionId} expecting src to be ${conn.dst} but it is ${ipv4.info.dstaddr}`);
         }
 
-        if (ret.info.protocol === PROTOCOL.IP.TCP) {
-          let datalen = ret.info.totallen - ret.hdrlen;
-          if (state.verbose) {
+        if (ipv4.info.protocol === PROTOCOL.IP.TCP) {
+          let datalen = ipv4.info.totallen - ipv4.hdrlen;
+          if (state.debug) {
             logger.info('    Decoding TCP ...');
           }
 
-          ret = decoders.TCP(buffer, ret.offset);
-          logger.info(`    TCP info - from port: ${ret.info.srcport} to port: ${ret.info.dstport} length ${datalen}`);
-
-          if (conn.port !== ret.info.dstport) {
-            logger.error(`${conn.connectionId} expecting port to be ${conn.port} but it is ${ret.info.dstport}`);
+          let tcp = decoders.TCP(buffer, ipv4.offset);
+          if (state.debug || state.verbose) {
+            logger.info(`    TCP info - from port: ${tcp.info.srcport} to port: ${tcp.info.dstport} length ${datalen}`);
           }
 
-          datalen -= ret.hdrlen;
+          if (conn.port !== tcp.info.dstport) {
+            logger.error(`    ${conn.connectionId} expecting port to be ${conn.port} but it is ${tcp.info.dstport}`);
+          }
+
+          datalen -= tcp.hdrlen;
           if (state.content) {
-            let content = buffer.toString('binary', ret.offset, ret.offset + datalen);
-            logger.info(`    content: ${content}`);
+            let content = buffer.toString('binary', tcp.offset, tcp.offset + datalen);
+            if (state.verbose) {
+              logger.info(`    content: ${content}`);
+            }
           }
 
-          // by connectionId -> { charCount, packets, disconnected, lastMessageTimestamp }
+          if (!state.debug && !state.verbose) {
+            logger.info(`    IPv4 TCP from ${ipv4.info.srcaddr}:${tcp.info.srcport} to ${ipv4.info.dstaddr}:${tcp.info.dstport} length=${datalen}`);
+          }
+            // by connectionId -> { charCount, packets, disconnected, lastMessageTimestamp }
           let sample = samplesIndex[conn.connectionId];
           if (!sample) {
             sample = {
@@ -456,56 +507,76 @@ function monitorConnection(conn) {
           sample.packetCount++;
           sample.lastMessageTimestamp = new Date().toISOString();
 
-        } else if (ret.info.protocol === PROTOCOL.IP.UDP) {
-          if (state.verbose) {
+        } else if (ipv4.info.protocol === PROTOCOL.IP.UDP) {
+          if (state.verbose || state.debug) {
             logger.info('    Decoding UDP ...');
           }
 
-          ret = decoders.UDP(buffer, ret.offset);
-          logger.info(`    UDP info - from port: ${ret.info.srcport} to port: ${ret.info.dstport}`);
+          let udp = decoders.UDP(buffer, ipv4.offset);
+          if (state.debug || state.verbose) {
+            logger.info(`    UDP info - from port: ${udp.info.srcport} to port: ${udp.info.dstport}`);
+          }
           if (state.content) {
-            let content = buffer.toString('binary', ret.offset, ret.offset + ret.info.length);
-            logger.info(`    ${content}`);
+            let content = buffer.toString('binary', udp.offset, udp.offset + udp.info.length);
+            if (state.debug || state.verbose) {
+              logger.info(`    ${content}`);
+            }
           }
         } else
-          logger.info(`    Unsupported IPv4 protocol: ${PROTOCOL.IP[ret.info.protocol]}`);
+          logger.info(`    Unsupported IPv4 protocol: ${PROTOCOL.IP[ipv4.info.protocol]}`);
       } else
-        logger.info(`    Unsupported Ethertype: ${PROTOCOL.ETHERNET[ret.info.type]}`);
+        logger.info(`    Unsupported Ethertype: ${PROTOCOL.ETHERNET[eth.info.type]}`);
     } else {
       logger.error(`    Unsupported linkType ${linkType}`);
     }
   });
 }
 
-const getAutoConfigUrl = `${state.config.agent.apiBase}sensor/autoConfig`
-    + `?sensorId=${encodeURI(state.config.sensor.sensorId)}`
-    + `&agentId=${encodeURI(state.config.agent.agentId)}`
-    + `&customerId=${encodeURI(state.config.sensor.customerId)}`;
-
 function getConfig() {
-  return new Promise((fulfill, reject) {
-    if (state.verbose) {
-      logger.info(`GET ${getAutoConfigUrl}`);
-    }
-    request({
-      method: 'GET',
-      uri: getAutoConfigUrl
-    }).then(obj => {
-      if (state.verbose) {
-        logger.info(JSON.stringify(obj, null, '  '));
-      }
-      fulfill(obj);
-    }).catch(err => {
-      logger.error(err);
-      reject(err);
-    });
-  });
+  state.getAutoConfigUrl = `${state.config.agent.apiBase}sensor/autoConfig`
+      + `?sensorId=${encodeURI(state.config.sensor.sensorId)}`
+      + `&agentId=${encodeURI(state.config.agent.agentId)}`
+      + `&customerId=${encodeURI(state.config.sensor.customerId)}`;
+  if (state.verbose) {
+    logger.info(`auto configuration call GET ${state.getAutoConfigUrl}`);
+  }
+  return request({
+    method: 'GET',
+    uri: state.getAutoConfigUrl,
+    json: true
+  })
 }
 
 if (state.autoConfig) {
   getConfig().then((obj) => {
+    const errors = [];
+    // validate contents
+    if (obj.customerId !== state.config.sensor.customerId) {
+      errors.push(`unexpected customerId "${obj.customerId}"`);
+    }
+    if (obj.agentId !== state.config.agent.agentId) {
+      errors.push(`unexpected agentId "${obj.agentId}"`);
+    }
+    if (obj.sensorId !== state.config.sensor.sensorId) {
+      errors.push(`unexpected customerId "${obj.sensorId}"`);
+    }
+    if (errors.length === 0) {
+      state.config.monitor = state.config.monitor || {};
+      state.config.monitor.version = obj.version;
+      state.config.monitor.name = obj.name;
+      state.config.monitor.sampleRate = obj.sampleRate;
+      state.config.monitor.device = obj.device;
+      state.config.monitor.deviceName = obj.deviceName;
+      state.config.monitor.connections = obj.connections;
 
+      startMonitoring();
+    }
+
+    if (errors.length) {
+      console.error('Errors detected in response to autoConfig:');
+      errors.forEach(e => logger.error(e));
+    }
   },(err) => {
-
+    logger.error(`Error returned from getConfig(): ${err}`);
   });
 }

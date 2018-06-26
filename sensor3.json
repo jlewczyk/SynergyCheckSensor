@@ -1,9 +1,9 @@
 {
   "sensor": {
-    "sensorId": "c9b1babb-2189-4d62-90a1-8376a6eac2b8",
-    "name": "Canary1",
+    "sensorId": "bccadbd0-7da6-4e55-bd5d-fe86a06a7707",
+    "name": "Canary3",
     "created": {
-      "when": "2018 Jun 21, 10:30 am EDT",
+      "when": "2018 Jun 25, 6:10 pm EDT",
       "by": "Lewczyk,John"
     },
     "customerId": "6ea2967d-29f3-4dd3-a7ee-eb1b777ba20c"

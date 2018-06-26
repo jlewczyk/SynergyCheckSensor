@@ -19,12 +19,12 @@
   },
   "swagger": {
     "httpProtocol": "http",
-    "hostName": "192.168.1.6"
+    "hostName": "10.157.100.80"
   },
-  "report": {
+  "x-report": {
     "period": 60000
   },
-  "sensors": [
+  "x-sensors": [
     {
       "sensorId": "c9b1babb-2189-4d62-90a1-8376a6eac2b8",
       "name": "trialSensor",
@@ -35,15 +35,15 @@
       "connections": [
         {
           "kind": "ip",
-          "src": "192.168.1.7",
-          "dst": "192.168.1.6",
+          "src": "10.157.100.80",
+          "dst": "10.157.100.81",
           "port": "20000",
           "connectionId": 47
         },
         {
           "kind": "ip",
-          "src": "192.168.1.7",
-          "dst": "192.168.1.6",
+          "src": "10.157.100.80",
+          "dst": "10.157.100.81",
           "port": "20001",
           "connectionId": 53
         }
