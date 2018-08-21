@@ -1,0 +1,9 @@
+---
+clientid: arnot
+secret: arnot
+customerid: 5b6dedcdf73e7725e42cf642
+protocol: http
+hostName: localhost
+port: 4200
+maxConcurrent: 1
+maxAgentReports: 2

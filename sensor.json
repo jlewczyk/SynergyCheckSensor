@@ -10,7 +10,7 @@
   },
   "agent": {
     "agentId": "194bb4a0-21e1-41ff-a736-8158c1760e95",
-    "apiBase": "http://10.157.100.73:19999/api/v1/",
+    "apiBase": "http://localhost:19999/api/v1/",
     "apiKeys": [
       "6ff8b366-36ea-429d-8ab5-6c21fff37485",
       "59671f72-c20c-48dc-b096-709123150cdb"

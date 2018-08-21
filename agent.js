@@ -269,6 +269,7 @@ processConfigItem('debug');
 //------------- web server for swagger docs needs to be self aware ------------
 processConfigItem('httpProtocol', false, 'swagger.httpProtocol');
 processConfigItem('hostName', false, 'swagger.hostName');
+processConfigItem('hostName', false, 'swagger.hostName');
 
 processConfigItem('port');
 
@@ -530,12 +531,15 @@ app.post('/api/v1/sensor/start', function(req, res) {
 app.post('/api/v1/sensor/stop', function(req, res) {
   res.status(500).send({ status: 'error', errors: ['not implemented']});
 });
+// Can ask agent - what was that last report that was sent?
 app.get('/api/v1/sensor/priorReport', function(req, res) {
   res.send(priorReport || {});
 });
+// Can ask agent for a report on demand, not waiting for next report period
 app.get('/api/v1/sensor/nextReport', function(req, res) {
   res.send(getReport());
 });
+//
 app.get('/api/v1/sensor/autoConfig', function(req, res) {
   let errors = [];
   const sensorId = req.query.sensorId;
@@ -548,7 +552,8 @@ app.get('/api/v1/sensor/autoConfig', function(req, res) {
   } else if (customerId !== state.config.synergyCheck.customerId) {
     errors.push(`unknown customerId "${customerId}"`);
   }
-  // todo - validate agentId
+  // todo - validate agentId specified on startup.
+  // assume agent knows its own valid id!
   if (typeof(agentId) === 'undefined') {
     errors.push(`agentId is required`);
   } else if (agentId !== state.config.agent.agentId) {

@@ -497,6 +497,9 @@ function monitorConnection(conn) {
                 logger.info(`    content: ${content}`);
               }
             }
+            if (!dataLen) {
+              return; // filter out empty packets
+            }
 
             if (!state.debug && !state.verbose) {
               logger.info(`    IPv4 TCP from ${ipv4.info.srcaddr}:${tcp.info.srcport} to ${ipv4.info.dstaddr}:${tcp.info.dstport} length=${datalen}`);
