@@ -2,7 +2,7 @@
 // It takes data reported by the sensors and combines their data, compresses it, and reports it to the
 // synergyCheck.com cloud service.
 // It also tracks the health of the sensor's.
-// The sensors are programs that monitor the interfaces (tcp/ip traffic and/or file-based)
+// The sensors are programs that monitor the connections (tcp/ip traffic and/or file-based)
 // The sensor report data more often to the agent than the agent reports to synergyCheck.com
 
 // Auto configuration is the ability to just provide in the config file the following
@@ -30,18 +30,33 @@ const fs         = require('fs');
 const path       = require('path');
 const jsYaml     = require('js-yaml')
 const swaggerUI  = require('swagger-ui-express');
-// manage command line arguments
-const commander  = require('commander');
+const swaggerTools = require('swagger-tools');
+const commander  = require('commander'); // manage command line arguments
+const colors     = require('colors');
+const durationParser = require('duration-parser');
+const commonLib   = require('./lib/common');
+const agentRoutes = require('./lib/controllers/agentRoutes');
 
 // TO DO - real logger!
 const logger = {
-  info: function() { console.log.apply(null, arguments); },
-  error: function() { console.error.apply(null, arguments); }
+  info: function () {
+    console.info.apply(null, Array.from(arguments).map(a => colors.white(a)));
+  },
+  error: function () {
+    console.error.apply(null, Array.from(arguments).map(a => colors.red(a)));
+  },
+  warning: function() {
+    console.log.apply(null, Array.from(arguments).map(a => colors.yellow(a)));
+  },
+  success: function() {
+    console.log.apply(null, Array.from(arguments).map(a => colors.green(a)));
+  },
+  debug: function() {
+    console.log.apply(null, Array.from(arguments).map(a => colors.gray(a)));
+  }
 };
 
 const app = express();
-
-// todo - logging
 
 let config; // contents of configuration file
 let swaggerDocument;
@@ -50,10 +65,7 @@ let started = new Date();
 // used to generate unique transaction number
 // by combining this with the id of the sensor and a counter
 const startedMills = started.getTime();
-let transactionCounter = 0;
-
-let sensorsAcc = []; // list of sensors supplying daa
-let connectionsAcc = []; // accumulating reports from sensors
+// let transactionCounter = 0;
 
 let priorReport = false; // intiialize to false so recognize first time
 
@@ -61,19 +73,38 @@ const state = {
   release: '0.0.1',
   autoConfig: false,
   commandLine: {}, // copy of arguments
-  configFile: './agent.json',
-  autoConfigUrl: undefined,
+  configFile: './agent.yaml',
+  config: undefined, // set when config file read
+  startedMills: startedMills,
+  autoConfigUrl: undefined, // set when autoConfig executed
+
+  // agent is a server, this specified how and where it is listening
   httpProtocol: 'http', // protocol (to inform swagger)
   hostName: 'localhost', // name of host listening on (to inform swagger)
   port: 19999, // port to listen to requests from sensors
+
+  // for generating reports to SynergyCheck
   lastTransactionId: '',
-  synergyCheck: {
-    apiBase: 'http://synergyCheck.com/api/v1/'
+  synergyCheck: { // autoConfig or explcit in config file
+    protocol: 'http',
+    hostName: 'localHost',
+    port: 8080,
+    apiBase: '/api/v1/'
   },
-  swagger: {
+  agent: {}, // autoConfig or explcit in config file
+  swagger: {  // autoConfig or explcit in config file
     swaggerFile: './swagger/agent.yaml',
   },
+  report: {
+    autoReport: true
+  }, // autoConfig or explicit in config file
+  sensors: [], // autoConfig or explicit in config file
   started: started.toISOString(),
+  sensorsAccum: [], // list of sensors supplying data accumulated for next report to synergyCheck
+  connectionsAccum: [], // list of connections reported by sensors accumulated for current report period
+  transactionCounter: 0, // incremented for each report to synergyCheck and included in its tx
+  agentReportsSent: 0,
+  agentReportErrors: 0,
   verbose: false,
   debug: false
 };
@@ -82,11 +113,17 @@ const state = {
 // todo - add type, required, and deeper paths to validate config oontents
 const configKeys = [
     'name', // string
+    'protocol',
+    'hostName',
     'port', // 1025 - 49151
     'swagger.swaggerFile', // a yaml file
     'swagger.httpProtocol', // 'http' or 'https'
     'swagger.hostName', // ip4 address, or dns name
+    //'swagger.post', // got to be same as port above
     'agent.agentId', // unique id for this agent
+    'synergyCheck.protocol',
+    'synergyCheck.hostName',
+    'synergyCheck.port',
     'synergyCheck.apiBase', // for api calls to synergyCheck.com
     'synergyCheck.customerId', // string
     'report.period', // integer >= 0
@@ -108,160 +145,128 @@ commander
     .option(`-c, --config [value]`, `The configuration file, overrides "${state.configFile}"`)
     .option(`-a, --auto`, `perform auto configuration from synergyCheck server specified`)
     .option(`-s, --swagger [value]`, `the swagger specification file, overrides "${state.swagger.swaggerFile}"`)
-    .option(`-s, --synergyCheck [value]`, `The protocol://host:port/api overrides "${state.synergyCheck.apiBase}"`)
     .option(`-p, --port [value]`, `port the web server is listening on, override default of "${state.port}"`)
+    .option(`-a, --autoReport [value]`, `automatically start agentReports true/false, overrides default of ${state.report.autoReport}`)
     .option(`-b, --verbose`, `output verbose messages for debugging`)
     .option(`-d, --debug`, `output debug messages for debugging`)
     .parse(process.argv);
 
-// resolve dotted path into obj
-function resolvePath(obj, path) {
-  let paths = path.split('.');
-  let val = obj;
-  while (paths.length && typeof(obj) !== 'undefined') {
-    obj = obj[paths[0]];
-    paths.shift();
-  }
-  return obj;
-}
-// (state,'swagger.host', 'www.foo.com')
-// (state,'debug', commander.debug)
-function setPath(obj, path, val) {
-  let paths = path.split('.');
-  while (paths.length > 1 && typeof(obj) !== 'undefined') {
-    if (typeof(obj[paths[0]]) === 'undefined') {
-      obj = obj[paths[0]] = {};
-    } else {
-      obj = obj[paths[0]];
-    }
-    paths.shift();
-  }
-  if (typeof(obj) === 'object') {
-    obj[paths[0]] = val;
-  }
-  return obj;
-}
 
-// @param name - the name of the item in the state object, can be dotted path
-// @param commanderProp - the optional commander (command line) argument name if different from name
-// #param configProp - optional configuration file prop name if different from name, can be dotted path
-// Note - can be used for item that is not available on the command line, pass false for commanderProp
-function processConfigItem(stateName, commanderProp, configProp) {
-  if (!commanderProp && commanderProp !== false) {
-    commanderProp = stateName;
-  }
-  if (!configProp) {
-    configProp = stateName;
-  }
-  if (commanderProp !== false && commander[commanderProp]) {
-    logger.info(`Using command line parameter - ${commanderProp}, ${commander[commanderProp]}`);
-    setPath(state, stateName, commander[commanderProp]); // command line overrides default
-  } else if (resolvePath(config, configProp)) {
-    logger.info(`Using config file parameter - ${configProp}, ${resolvePath(config, configProp)}`);
-    setPath(state, stateName, resolvePath(config, configProp)); // config file overrides default
-  } else {
-    logger.info(`Using default parameter: - ${stateName}, ${resolvePath(state, stateName)}`);
-  }
-}
+commonLib.setVars(commander, logger, state);
+commonLib.readConfig();
+const processConfigItem = commonLib.processConfigItem;
+const resolvePath = commonLib.resolvePath;
+const setPath = commonLib.setPath;
+
+agentRoutes.init(state);
+
 // Copy specified command line arguments into state
 commanderArgs.forEach((k) => {
-  state.commandLine[k] = commander[k];
-});
-
-// Note - one cannot override the config file in the config file
-if (commander.config) {
-  logger.info(`Using command line parameter - config ${commander.config}`);
-  state.configFile = commander.config;
-} else {
-  logger.info(`default parameter - config ${state.configFile}`);
-}
-// Read the configuration file
-try {
-  // read the file and parse it as JSON then don't need './filename.json', can just specify 'filename.json'
-  let configText = fs.readFileSync(state.configFile, 'utf8');
-  config = JSON.parse(configText);
-  // config = require(state.configFile); // using require to synchronously load JSON file parsed directly into an object
-} catch (ex1) {
-  logger.error(`Cannot load configuration file ${state.configFile}`);
-  if (commander.verbose) {
-    logger.error(ex1.toString());
+  if (commander[k] !== undefined) {
+    state.commandLine[k] = commander[k];
   }
-  logger.info(`exception loading config file "${state.configFile}": ${ex1}`);
-  logger.error('Exiting...');
-  process.exit(1);
-}
+});
 
 processConfigItem('autoConfig', 'auto');
 
+// Need to copy select set of properties in config.* to state.*
 if (state.autoConfig) {
   ['synergyCheck', 'agent', 'swagger'].forEach(name => {
-    if (typeof(config[name]) !== 'object') {
+    if (typeof(state.config[name]) !== 'object') {
       logger.error(`for autoConfig, missing ${name} object in config file`);
       process.exit(1);
+    } else {
+      Object.assign(state[name], state.config[name]);
     }
   });
 } else {
   ['synergyCheck', 'agent', 'swagger', 'report', 'sensors'].forEach(name => {
-    if (typeof(config[name]) !== 'object') {
+    if (typeof(state.config[name]) !== 'object') {
       logger.error(`for non-autoConfig, missing ${name} object in config file`);
       process.exit(1);
+    } else {
+      Object.assign(state[name], state.config[name]);
     }
   });
 }
-processConfigItem('synergyCheck.apiBase', 'synergyCheck');
-
-//------------ validate the properties in the config.agent -------------
-//------------------ validate config.agent.agentId ---------------------
-if (typeof(config.agent.agentId) === 'undefined') {
-  logger.error(`missing agent.agentId in config file`);
+const errors = [];
+if (!state.synergyCheck.httpProtocol) {
+  errors.push(`Missing state.synergyCheck.httpProtocol property`);
+}
+if (!state.synergyCheck.hostName) {
+  errors.push(`Missing state.synergyCheck.hostName property`);
+}
+if (!state.synergyCheck.port) {
+  errors.push(`Missing state.synergyCheck.port property`);
+}
+if (!state.synergyCheck.apiBase) {
+  errors.push(`Missing state.synergyCheck.apiBase property`);
+}
+if (errors.length) {
+  errors.forEach(e => logger.error(e));
   process.exit(1);
 }
-if (typeof(config.agent.agentId) === 'string' && config.agent.agentId.length === 0) {
+// Setup for communicating with SynergyCheck - ping, authenticate, autoConfig, post agentReports,...
+commonLib.setProtoHostPort(`${state.synergyCheck.httpProtocol || 'http'}://${state.synergyCheck.hostName}:${state.synergyCheck.port || 80}`);
+
+//------------ validate the properties in the state.agent -------------
+//------------------ validate state.agent.agentId ---------------------
+if (typeof(state.agent.agentId) === 'undefined') {
+  logger.error(`missing agent.agentId`);
+  process.exit(1);
+}
+if (typeof(state.agent.agentId) === 'string' && state.agent.agentId.length === 0) {
   logger.error(`agent.agentId in config file must be a non-empty string string`);
   process.exit(1);
 }
 
-//------------ validate the properties in the config.sensors -----------
+//------------ validate the properties in the state.sensors -----------
 // todo
 if (state.autoConfig) {
-  if (typeof(config.sensors) !== 'undefined') {
-    logger.info('config.sensors ignored when autoConfig is enabled. It will be auto configured');
+  if (typeof(state.sensors) !== 'undefined' && state.sensors.length) {
+    logger.info('state.sensors ignored when autoConfig is enabled. It will be auto configured');
   }
 }
 
-// Copy original config file values into state.config
-state.config = {};
-Object.keys(config).forEach((k) => {
-  state.config[k] = config[k];
-});
-
 //------------ validate the properties in the config.report ------------
 if (state.autoConfig) {
-  if (typeof(config.report) !== 'undefined') {
-    logger.info('config.report ignored when autoConfig is enabled. It will be auto configured');
+  if (typeof(state.report) !== 'undefined') {
+    logger.info('state.report ignored when autoConfig is enabled. It will be auto configured');
   }
 } else {
-  if (typeof(config.report.period) === 'string') {
-    if (/^\d+$/.test(config.report.period)) {
-      // assume ms
-      config.report.period = Number.parseInt(config.report.period);
-    } else {
+  if (typeof(state.report.period) === 'string') {
+    state.report.period = durationParser(state.report.period);
+    if (state.report.period <= 0) {
       // todo - recognize '10m', etc.
       logger.error(`report.period is not a positive integer "${config.report.period}"`);
       process.exit(1);
     }
   }
-  if (typeof(config.report.period) === 'number') {
-    if (config.report.period < 1000) {
-      logger.error('cannot accept report.period < 1000 ms');
-      process.exit(1);
-    }
+  if (state.report.period < 1000) {
+    logger.error('cannot accept report.period < 1000 ms');
+    process.exit(1);
   }
 }
 
-processConfigItem('verbose');
+processConfigItem('autoReport', 'autoReport', 'report.autoReport');
+if (typeof(state.report.autoReport) === 'string') {
+  // configured from command line
+  state.report.autoReport = (state.report.autoReport.toLowerCase === 'true' ? true : state.report.autoReport.toLowerCase() === 'false' ? false : undefined);
+  if (state.report.autoReport == undefined) {
+    logger.error(`Expected autoReport to be true or false, but you specified ${state.report.autoReport}`);
+    process.exit(1);
+  }
+}
+if (typeof(state.report.autoReport) !== 'boolean') {
+  logger.error(`expected report.autoReport to be boolean, it is ${typeof(state.report.autoReport)}`);
+  process.exit(1);
+}
+if (!state.report.autoReport) {
+  logger.warning(`Will NOT automatically send agentReports. You need to make web api all to start them`);
+}
+
 if (state.verbose) {
-  logger.info(JSON.stringify(config, null, '  '));
+  logger.info(JSON.stringify(state, null, '  '));
 }
 
 processConfigItem('debug');
@@ -269,20 +274,19 @@ processConfigItem('debug');
 //------------- web server for swagger docs needs to be self aware ------------
 processConfigItem('httpProtocol', false, 'swagger.httpProtocol');
 processConfigItem('hostName', false, 'swagger.hostName');
-processConfigItem('hostName', false, 'swagger.hostName');
 
 processConfigItem('port');
 
-// Start the app by listening on the default Heroku port
-// as port is specified by OS environment variable
+// Start the app by listening on the default Heroku portas port is specified by OS environment variable
+// else use the port in the configuration file
 state.port = process.env.PORT || state.port;
-state.protoHostPort = `${state.httpProtocol}://${state.hostName}:${state.port}`;
+state.protoHostPort = `${state.httpProtocol || 'http'}://${state.hostName}:${state.port || 80}`;
 
 if (state.verbose) {
   logger.info(JSON.stringify(state, null, '  '));
 }
 
-// Serve only the static files form the dist directory
+// Serve only the static files form the dist directory for any web site this hosts
 const distFolder = __dirname + '/dist';
 if (!fs.existsSync(distFolder)) {
   logger.error("distribution folder does not exist:" + distFolder);
@@ -291,447 +295,190 @@ if (!fs.existsSync(distFolder)) {
 app.use(express.static(distFolder));
 app.use(express.json());
 
+// when state.port is finalized, can set up to server swagger
 //------------- swagger specification document -------------------
 processConfigItem('swagger.swaggerFile', 'swagger', 'swagger.swaggerFile');
-// when state.port is finalized, can set up to server swagger
+try {
+  let yamlText = fs.readFileSync(state.swagger.swaggerFile, 'utf8');
+  state.swagger.httpProtocol = state.swagger.httpProtocol || state.httpProtocol;
+  state.swagger.hostName = state.swagger.hostName || state.hostName;
+  state.swagger.port = state.swagger.port || state.port;
+  logger.info(`building swagger to request on ${state.swagger.httpProtocol}://${state.swagger.hostName}:${state.swagger.port}`);
+  yamlText = yamlText.replace(/___HOST_AND_PORT___/g, state.swagger.hostName + ':' + state.swagger.port)
+    .replace(/https #___PROTOCOL___/, state.swagger.httpProtocol);
+  swaggerDocument = jsYaml.safeLoad(yamlText);
 
-function prepareSwagger() {
-  try {
-    let swaggerText = fs.readFileSync(state.swagger.swaggerFile, 'utf8');
-    swaggerText = swaggerText.replace(/___HOST_AND_PORT___/g, state.hostName + ':' + state.port)
-        .replace(/___PROTOCOL___/g, state.httpProtocol);
-    if (/[.]json$/i.test(state.swagger.swaggerFile)) {
-      swaggerDocument = JSON.parse(swaggerText);
-    } else {
-      swaggerDocument = jsYaml.safeLoad(swaggerText);
-    }
-  } catch (ex2) {
-    logger.error('Cannot load the swagger document ', state.swagger.swaggerFile);
-    if (state.verbose) {
-      logger.error(ex2.toString());
-    }
-    logger.error('exiting...');
-    process.exit(1);
+  // write out the resulting text to a file so it can be read by other tools
+  let newFile = `${path.dirname(state.swagger.swaggerFile)}${path.sep}resolved.${path.basename(state.swagger.swaggerFile)}`;
+  fs.writeFileSync(newFile, yamlText, 'utf8');
+
+} catch (ex2) {
+  logger.error('Cannot load the swagger document ', state.swagger.swaggerFile);
+  if (state.verbose) {
+    logger.error(ex2.toString());
   }
-  // Swagger SPA has its own static resources to be served which are found in the installed package
-  app.use('/api-docs', swaggerUI.serve, swaggerUI.setup(swaggerDocument));
+  logger.error('exiting...');
+  process.exit(1);
+}
+logger.debug(swaggerDocument);
+
+//------------------- Swagger SPA -----------------------
+// usage: initializeSwagger(app, swaggerDocument).then(() => { ; });
+function initializeSwagger(app, swaggerDoc) {
+
+  // Initialize the Swagger middleware
+  // debugging mode is set with environment variable
+  // https://github.com/apigee-127/swagger-tools/blob/master/docs/Middleware.md
+  //   c:\synergyCheck\synergy-check>set DEBUG
+  //    DEBUG=swagger-tools:middleware:*
+
+  return new Promise((fulfill, reject) => {
+    if (state.oldSwagger) {
+      const swaggerUI = require('swagger-ui-express');
+      // Swagger SPA has its own static resources to be served which are found in the installed package
+      app.use('/api-docs', swaggerUI.serve, swaggerUI.setup(swaggerDocument));
+      fulfill();
+    } else {
+      // swaggerRouter configuration
+      const optionsRouter = {
+        controllers: './lib/controllers',
+        useStubs: false
+        //useStubs: process.env.NODE_ENV === 'development' ? true : false // Conditionally turn on stubs (mock mode)
+      };
+      swaggerTools.initializeMiddleware(swaggerDoc, (middleware) => {
+        // Interpret Swagger resources and attach metadata to request - must be first in swagger-tools middleware chain
+        app.use(middleware.swaggerMetadata());
+
+        // Validate Swagger requests
+        app.use(middleware.swaggerValidator());
+
+        // Route validated requests to appropriate controller
+        app.use(middleware.swaggerRouter(optionsRouter));
+        //------------------- Errors trapped ----------------------------
+        app.use(function (err, req, res, next) {
+          if (err.failedValidation) {
+            res.status(422).send({ error: 'failed validation', code: err.code, details: err});
+          } else {
+            res.status(422, err);
+          }
+        });
+
+        // Serve the Swagger documents and Swagger UI
+        app.use(middleware.swaggerUi({
+          swaggerUi: '/api-docs',
+          apiDocs: '/docs'
+        }));
+
+        fulfill();
+      });
+    }
+  });
 }
 
-//--------------------------- APIs -------------------------------
+initializeSwagger(app, swaggerDocument).then(() => {
+  logger.success(`Swagger initialized`);
+  commonLib.getPing().then(() => {
+    logger.success(`pinged synergyCheck server at ${commonLib.getProtoHostPort()}`);
+    commonLib.getAuthenticate().then(jwtToken => {
+      logger.success(`authenticated with synergyCheck server`);
 
-// is the server up and responding?
-app.get('/api/v1/ping', function(req, res) {
-  res.status(200).send({
-    timestamp: (new Date()).toISOString()
-  });
-});
-
-// state
-app.get('/api/v1/state', function(req, res) {
-  res.status(200).send(state);
-});
-
-//--------------------- Sensor reporting ---------------------------
-// Sensor reports data to this agent
-app.post('/api/v1/sensor/report', function (req, res) {
-  const errors = [];
-  const obj = req.body;
-  let sensor;
-  let timestampDate;
-  let timestampIso;
-
-  if (state.autoConfig && !state.config.sensors) {
-    res.status(412).send({ status: 'error', errors: ['agent has not been auto configured'] });
-    if (state.debug) {
-      logger.error('errors: ' + JSON.stringify(errors, null, '  '));
-    }
-    return;
-  }
-  if (obj && typeof(obj.snapshot) === 'object') {
-    // de-structure
-    let {sensorId, customerId, timestamp, duration, connections} = obj.snapshot;
-    if (state.debug) {
-      logger.info(JSON.stringify(obj, null, '  '));
-    }
-
-    // validate sensorId?
-    if (typeof(sensorId) === 'undefined') {
-      errors.push('sensorId is required');
-    } else {
-      sensor = state.config.sensors.find(o => o.sensorId === sensorId)
-      if (!sensor) {
-        errors.push(`unrecognized sensorId "${sensorId}"`);
-      }
-    }
-    // validate customerId
-    if (typeof(customerId) === 'undefined') {
-      errors.push('customerId is required');
-    } else if (state.config.synergyCheck.customerId !== customerId) {
-      errors.push(`unrecognized customerId "${customerId}"`);
-    }
-
-    // validate timestamp
-    if (typeof(timestamp) === 'undefined') {
-      errors.push('timestamp is required');
-    } else {
-      try {
-        timestampDate = new Date(timestamp);
-        if (Number.isNaN(timestampDate.getTime())) {
-          errors.push(`invalid format for timestamp "${timestamp}"`);
-          timestampDate = undefined;
-          timestampIso = '?';
-        } else {
-          // so all the connection timestamps are the same
-          timestampIso = timestampDate.toISOString();
+      if (state.autoConfig) {
+        if (state.debug || state.verbose) {
+          logger.info('autoConfig specified, so server not started until it received valid configuration');
         }
-      } catch (exDate) {
-        errors.push(`invalid format for timestamp "${timestamp}"`);
-        timestampDate = undefined;
-        timestampIso = '?';
-      }
-    }
+        state.autoConfigUrl = `${commonLib.getProtoHostPort()}${state.synergyCheck.apiBase}agent/${encodeURIComponent(state.agent.agentId)}/config`;
+        request({
+          method: 'GET',
+          uri: state.autoConfigUrl,
+          qs: {
+            customerId: state.synergyCheck.customerId
+          },
+          headers: {
+            'Authorization': `Bearer ${state.synergyCheck.jwt}`
+          },
+          json: true // parse body
+        }).then(configObj => {
+          if (state.debug || state.verbose) {
+            logger.info(`autoConfig data is ${JSON.stringify(configObj, null, '  ')}`);
+          }
+          const errors = [];
+          if (configObj.customer_id !== state.synergyCheck.customerId) {
+            errors.push(`expected customerId to be ${state.synergyCheck.customerId} but received ${configObj.customerId}`);
+          }
+          if (configObj.agent_id !== state.agent.agentId) {
+            errors.push(`expected agentId to be ${state.agent.agentId} but received ${configObj.agentid}`);
+          }
+          if (configObj.timestamp) {
+            // todo - is this new than what we have?  If not, can ignore it
+            // for use when agent polls server for most recent config so can auto update!
+          }
+          state.report = configObj.report; // todo - validate
+          state.sensors = configObj.sensors; // todo - validate
 
-    // validate duration - todo
-
-    // process and validate each connection update in report
-    if (connections && connections.length) {
-      connections.forEach(ic => { // ic is incoming connection update
-        let icId; // connectionId that is a number
-        let charCount; // # of characters received in packets over sampling period
-        let packetCount; // # of packets received during sampling period
-        let connection; // found connection registered with icId
-
-        if (typeof(ic.connectionId) === 'string') {
-          if (/^\d+$/.test(ic.connectionId)) {
-            icId = Number.parseInt(ic.connectionId);
+          // todo - validate configuration data and incorporate
+          if (errors.length) {
+            logger.error(`Errors detected on incoming data from ${state.autoConfigUrl}`);
+            errors.forEach(e => { logger.error(e); });
+            process.exit(1);
           } else {
-            errors.push(`connectionId not in expected form '${ic.connectionId}'`);
-          }
-        } else if (typeof(ic.connectionId) === 'number') {
-          icId = ic.connectionId;
-        } else {
-          errors.push(`connectionId must be number "${ic.connectionId}"`)
-        }
-        if (sensor && typeof(icId) !== 'undefined') {
-          connection = sensor.connections.find(c => c.connectionId === icId);
-          if (!connection) {
-            errors.push(`unregistered connectionId "${icId}"`);
-          }
-        }
 
-        // process the character count being reported (if any)
-        if (typeof(ic.charCount) !== 'undefined') {
-          if (typeof(ic.charCount) === 'number') {
-            charCount = ic.charCount;
-            if (charCount < 0) {
-              errors.push(`cannot report negative charCount (${charCount}) for connectionId ${icId}`);
-            }
-          } else if (typeof(ic.charCount) === 'string') {
-            if (/^-\d+$/.test(ic.charCount)) {
-              charCount = Number.parseInt(ic.charCount);
-              if (charCount < 0) {
-                errors.push(`cannot report negative charCount (${charCount}) for connectionId ${icId}`);
-              }
-            } else {
-              errors.push(`expected number or parsable number string, got ${typeof(ic.charCount)} for connectionId ${icId}`);
-            }
-          } else {
-            errors.push(`expected number or parsable number string, got ${typeof(ic.charCount)} for connectionId ${icId}`);
-          }
-        }
 
-        if (typeof(ic.packetCount) !== 'undefined') {
-          if (typeof(ic.packetCount) === 'string') {
-            if (/^\d+$/.test(ic.packetCount)) {
-              packetCount = Number.parseInt(ic.packetCount);
-              if (packetCount < 0) {
-                errors.push(`packetCount must be >= 0, ${packetCount}`);
-              }
-            } else {
-              errors.push(`packetCount not expected form '${ic.packetCount}'`);
+            startListening();
+            if (state.report.autoReport) {
+              agentRoutes.startReporting();
             }
-          } else if (typeof(ic.packetCount) === 'number') {
-            packetCount = ic.packetCount;
-            if (packetCount < 0) {
-              errors.push(`packetCount must be >= 0, ${packetCount}`);
-            }
-          } else {
-            errors.push(`packetCount not expected form '${ic.packetCount}'`);
-          }
-        }
 
-        if (typeof(ic.disconnected) !== 'undefined') {
-          if (typeof(ic.disconnected) !== 'boolean') {
-            errors.push(`disconnected if present must be boolean, but it is ${typeof(ic.disconnected)}`);
           }
-        }
-
-        if (errors.length === 0) {
-
-          // note the sensor contributing to the next report
-          if (sensorsAcc.indexOf(sensorId) === -1) {
-            sensorsAcc.push(sensorId);
-          }
-
-          let connection = connectionsAcc.find(o => o.connectionId === icId);
-          if (connection) {
-            if (charCount) {
-              // have some volume of data to report
-              connection.charCount += charCount;
-              connection.lastMessageTimestamp = timestampIso;
-            }
-            if (packetCount) {
-              connection.packetCount += packetCount;
-            }
-            if (typeof(ic.disconnected) === 'boolean') {
-              // sensor reported either true of false (when changed)
-              // the last one reported in the reporting period will be passed on
-              if (!!connection.disconnected !== ic.disconnected) {
-                connection.lastChangeInConnectionTimestamp = timestampIso;
-              }
-              connection.disconnected = ic.disconnected;
-            }
-            // connection.timestamps.push(timestampIso);
-          } else {
-            connectionsAcc.push({
-              connectionId: icId,
-              charCount: charCount || 0,
-              packetCount: packetCount || 0,
-              disconnected: ic.disconnected || false,
-              // timestamps: [timestampIso],
-              lastMessage: ic.charCount ? timestampIso : undefined
-            });
-          }
-        }
-      });
-      if (errors.length) {
-        res.status(412).send({ status: 'errors', errors: errors });
-        if (state.debug) {
-          logger.error('errors: ' + JSON.stringify(errors, null, '  '));
+        }).catch(err => {
+          logger.error(`error on GET ${state.autoConfigUrl}, err=${err}`);
+        });
+        if (state.verbose) {
+          logger.info(`auto configuration call GET ${state.autoConfigUrl}`);
         }
       } else {
-        res.status(200).send({status: 'ok'});
-        if (state.debug) {
-          logger.info('ok');
-        }
+        logger.info('NOT auto configuring, using configuration as locally specified...')
+        initializeSwagger(app, swaggerDocument).then(() => {
+          commonLib.getPing().then(() => {
+            logger.success(`pinged synergyCheck server at ${commonLib.getProtoHostPort()}`);
+            commonLib.getAuthenticate().then(jwtToken => {
+              logger.success(`authenticated with synergyCheck server`);
+
+              startListening();
+              if (state.report.autoReport) {
+                agentRoutes.startReporting();
+              }
+
+            }, err => {
+              logger.error(`Failure to authenticate with server ${commonLib.getProtoHostPort()}`);
+              process.exit(1);
+            });
+          }, err => {
+            logger.error(`Fail to ping server ${commonLib.getProtoHostPort()}`);
+            process.exit(1);
+          })
+        }, err => {
+          logger.error(`Error initializing Swagger ${err}`);
+          process.exit(1);
+        });
       }
-    }
-  } else {
-    res.status(412).send({ status: 'errors', errors: ['no snapshot property']});
-    if (state.debug) {
-      logger.error('errors: ' + JSON.stringify(errors, null, '  '));
-    }
-  }
-});
-// Sensor is reporting that it has started
-app.post('/api/v1/sensor/start', function(req, res) {
-  res.status(500).send({ status: 'error', errors: ['not implemented']});
-});
-// Sensor is reporting that it has stopped
-app.post('/api/v1/sensor/stop', function(req, res) {
-  res.status(500).send({ status: 'error', errors: ['not implemented']});
-});
-// Can ask agent - what was that last report that was sent?
-app.get('/api/v1/sensor/priorReport', function(req, res) {
-  res.send(priorReport || {});
-});
-// Can ask agent for a report on demand, not waiting for next report period
-app.get('/api/v1/sensor/nextReport', function(req, res) {
-  res.send(getReport());
-});
-//
-app.get('/api/v1/sensor/autoConfig', function(req, res) {
-  let errors = [];
-  const sensorId = req.query.sensorId;
-  const agentId = req.query.agentId;
-  const customerId = req.query.customerId;
-  logger.info(`/api/v1/sensor/autoConfig?sensorId=${sensorId}&agentId=${agentId}&customerId=${customerId}`);
-  // validate customerId
-  if (typeof(customerId) === 'undefined') {
-    errors.push(`customerId is required`);
-  } else if (customerId !== state.config.synergyCheck.customerId) {
-    errors.push(`unknown customerId "${customerId}"`);
-  }
-  // todo - validate agentId specified on startup.
-  // assume agent knows its own valid id!
-  if (typeof(agentId) === 'undefined') {
-    errors.push(`agentId is required`);
-  } else if (agentId !== state.config.agent.agentId) {
-    errors.push(`unknown agentId "${agentId}"`);
-  }
-
-  if (typeof(sensorId) === 'undefined') {
-    errors.push(`sensorId is required`);
-  } else {
-    const sensor = state.config.sensors.find(s => s.sensorId === sensorId);
-    if (sensor) {
-      res.send({
-        sensorId: sensorId,
-        agentId: agentId,
-        customerId: customerId,
-        name: sensor.name,
-        version: sensor.version,
-        deviceName: sensor.deviceName,
-        device: sensor.device,
-        sampleRate: sensor.sampleRate,
-        connections: sensor.connections
-      }); // not found (for now, TODO)
-    } else {
-      errors.push('sensor not found');
-    }
-  }
-  if (errors.length) {
-    res.status(412).send({status: 'error', errors: errors});
-  }
+    }, err => {
+      logger.error(`Failure to authenticate with server ${commonLib.getProtoHostPort()}`);
+      process.exit(1);
+    });
+  }, err => {
+    logger.error(`Fail to ping server ${commonLib.getProtoHostPort()}`);
+    process.exit(1);
+  })
+}, err => {
+  logger.error(`Error initializing Swagger ${err}`);
+  process.exit(1);
 });
 
-// start an interval timer to send updates to synergyCheck service in the cloud
-function startReporting() {
-  let timer = setInterval(function () {
-    logger.info(`time to send report! ${new Date().toISOString()}`);
-    sendReport();
-  }, state.config.report.period);
-}
-
-let postReportUrl = `${state.config.synergyCheck.apiBase}agent/report`;
-logger.info(`report to url: ${postReportUrl}`);
-
-function sendReport() {
-  let theReport = getReport();
-  request({
-    method: 'POST',
-    uri: postReportUrl,
-    body: theReport,
-    json: true // automatically stringifies body
-  }).then(obj => {
-    logger.info(JSON.stringify(obj));
-  }).catch(err => {
-    logger.error(err);
-  });
-  if (state.verbose) {
-    logger.info(JSON.stringify(theReport, null, '  '));
-  }
-  // remember what you just sent
-  priorReport = theReport;
-
-}
-// return object containing body of post request to be sent to SynergyCheck.com server
-function getReport() {
-  // generate unique transaction number
-  // by combining this with the id of the sensor and a counter
-  transactionCounter++;
-  let transactionId = `${state.config.agent.agentId}|${startedMills}|${transactionCounter}`
-  state.lastTransactionId = transactionId;
-
-  const snapshot = {
-    customerId: state.config.synergyCheck.customerId,
-    agentId: state.config.agent.agentId,
-    transactionId: transactionId,
-    timestamp: new Date().toISOString(),
-    duration: state.config.report.period,
-    sensors: sensorsAcc.slice(0),
-    connections: connectionsAcc.map(o => {
-      return {
-        connectionId: o.connectionId,
-        charCount: o.charCount || 0,
-        packetCount: o.packetCount || 0,
-        lastMessageTimestamp: o.lastMessageTimestamp,
-        disconnected: o.disconnected,
-        lastChangeInConnectionTimestamp: o.lastChangeInConnectionTimestamp,
-        timestamps: o.timestamps
-      };
-    })
-  };
-  connectionsAcc = []; // reset accumulator for next report
-  sensorsAcc = [];
-
-  if (state.config.report.compress) {
-    // remove reporting those connections with no change from last report
-    if (priorReport) {
-      snapshot.connections = snapshot.connections.filter(o => {
-        if (o.charCount) {
-          return true; // always report if has messages
-        }
-        // no messages, check if change in disconnected? status
-        if (typeof(o.disconnected) !== 'undefined') {
-          // we have a value for disconnected
-          let connectionPrior = priorReport.connections.find(c => c.connectionId === o.connectionId);
-          if (connectionPrior) {
-            return connectionPrior.disconnected !== o.disconnected;
-          }
-          // we had no value prior
-          return true;
-        }
-        // no value for disconnected, so no change assumed from last report
-        return false;
-      });
-    }
-  }
-  return snapshot;
-}
-
-if (state.autoConfig) {
-  const errors = [];
-  state.autoConfigUrl = `${state.config.synergyCheck.apiBase}agent/autoConfig`;
-  request({
-    method: 'GET',
-    uri: state.autoConfigUrl,
-    qs: {
-      customerId: state.config.synergyCheck.customerId,
-      agentId: state.config.agent.agentId
-    },
-    json: true // parse body
-  }).then(obj => {
-    if (state.debug || state.verbose) {
-      logger.info(`autoConfig data is ${JSON.stringify(obj, null, '  ')}`);
-    }
-    // todo - validate configuration data and incorporate
-    if (obj.customerId !== state.config.synergyCheck.customerId) {
-      errors.push(`expected customerId to be ${state.config.synergyCheck.customerId} but received ${obj.customerId}`);
-    }
-    if (obj.agentId !== state.config.agent.agentId) {
-      errors.push(`expected agentId to be ${state.config.agent.agentId} but received ${obj.agentid}`);
-    }
-
-    if (errors.length === 0) {
-
-      state.port = obj.port; // todo - validate
-      state.protoHostPort = `${state.httpProtocol}://${state.hostName}:${state.port}`;
-
-      state.config.report = obj.report; // todo - validate
-      state.config.sensors = obj.sensors; // todo - validate
-
-      prepareSwagger(); // we have state.port
-      startListening();
-      startReporting();
-    }
-    if (errors.length) {
-      logger.error(`Errors detected on incoming data from ${state.autoConfigUrl}`);
-      errors.forEach(e => { logger.error(e); });
-    }
-
-  }).catch(err => {
-    logger.error(`error on GET ${state.autoConfigUrl}, err=${err}`);
-  });
-  if (state.verbose) {
-    logger.info(`auto configuration call GET ${state.autoConfigUrl}`);
-  }
-}
-if (state.autoConfig) {
-  if (state.debug || state.verbose) {
-    logger.info('autoConfig, so server not started until it received valid configuration');
-  }
-} else {
-  prepareSwagger(); // we have state.port
-  startListening();
-  startReporting();
-}
 
 function startListening() {
   app.listen(state.port);
   logger.info(`Server listening on port ${state.port}`);
   logger.info(`swagger api docs available at ${state.protoHostPort}/api-docs`);
-  logger.info(`service api docs available at ${state.protoHostPort}/api/*`);
 }
 
 

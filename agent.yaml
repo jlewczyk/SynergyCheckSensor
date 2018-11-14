@@ -1,0 +1,25 @@
+---
+name: SynergyHealthAgent
+autoConfig: true
+httpProtocol: http
+hostName: localhost
+port: 19999 # this agent listens on this port
+synergyCheck:
+  customerId: 5b8980bb9456dc0014456008
+  clientid: shc
+  secret: shc
+  httpProtocol: http
+  hostName: localhost
+  port: 8080
+  apiBase: /api/v1/
+  apiKeys: # for sensors to authenticate with
+  - fd3c36e1-fa93-438a-9f6e-5ef69427305a
+  - 7da420a0-22e8-446b-97a4-2cfc84d72989
+agent:
+  created:
+    when: 2018 Nov 13, 10:02 am EDT
+    by: Lewczyk,John
+  agentId: 5beba29fbd539721b4c4744c
+swagger: # so swagger page can hit this server, it must be told where this server is available
+  httpProtocol: http
+  hostName: localhost

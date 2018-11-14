@@ -1,0 +1,16 @@
+---
+sensor:
+  sensorId: c9b1babb-2189-4d62-90a1-8376a6eac2b8
+  name: Canary1
+  created:
+    when: 2018 Jun 21, 10:30 am EDT
+    by: Lewczyk,John
+  customerId: 6ea2967d-29f3-4dd3-a7ee-eb1b777ba20c
+agent:
+  agentId: 194bb4a0-21e1-41ff-a736-8158c1760e95
+  apiBase: http://localhost:19999/api/v1/
+  apiKeys:
+  - 6ff8b366-36ea-429d-8ab5-6c21fff37485
+  - 59671f72-c20c-48dc-b096-709123150cdb
+heartbeat: 30000
+comment: using auto configuration to provide sensor's configuration

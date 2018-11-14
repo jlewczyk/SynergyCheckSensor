@@ -1,3 +1,10 @@
+// Can start sensor in one of 4 different modes.
+// --info      Display OS information on ethernet interfaces are present on the machine
+// --list      List all ethernet interfaces on this machine
+// --find <ip> Find the first device with the specified ip
+// --auto      Request configuration from agent server and begin monitoring and reporting
+//   other     Use local configuration to begin monitoring and reporting
+//
 // Capture and decode TCP data packets for specified connections, sampling at specified period
 // and reporting to specified concentrator agent at specified period.
 // Generate heartbeat call to concentrator agent.
@@ -19,6 +26,8 @@ const Cap = require('cap').Cap;
 const decoders = require('cap').decoders;
 const PROTOCOL = decoders.PROTOCOL;
 const request = require('request-promise-native');
+const durationParser = require('duration-parser');
+const commonLib   = require('./lib/common');
 
 const bufSize = 10 * 1024 * 1024;
 const buffer = Buffer.alloc(65535);
@@ -96,61 +105,32 @@ const state = {
 commander
     .version(state.releas) // THIS IS WRONG!  IT MAY BE OVERRIDDEN BY config file value
     //.usage('[options] ...')
-    .option('-c, --config [value]', 'The configuration file, overrides "' + state.configFile + '"')
+    .option('-c, --config [value]', `The configuration file, overrides "${state.configFile}"`)
     .option(`-a, --auto`, `perform auto configuration from synergyCheck server specified`)
     .option('-l, --info', 'display OS information on ethernet interfaces devices on this machine.')
     .option('-l, --list', 'list devices on this machine.  Pick one and run again specifying --device xxxx')
-    .option('-f, --find [value]', 'find first device with specified ip' + state.find + '"')
-    .option('-d, --device [value]', 'The device name to monitor, overrides config."' + state.device + '"')
-    .option('-x, --filter [value]', 'filter expression' + state.filter + '"')
+    .option('-f, --find [value]', `find first device with specified ip ${state.find}"`)
+    .option('-d, --device [value]', `The device name to monitor, overrides config "${state.device}"`)
+    .option('-x, --filter [value]', `filter expression ${state.filter}"`)
     .option('-p, --port [value]', 'port the web server is listening on, override default of 80 or 443 depending on http or https')
-    .option('-b, --content', 'output packet message content for debugging, overrides "' + state.content + '"')
-    .option('-r, --release [value]', 'The release of the server software , overrides "' + state.release + '"')
-    .option('-b, --verbose', 'output verbose messages for debugging, overrides "' + state.verbose + '"')
-    .option('-d, --debug', 'output debug messages for debugging, overrides "' + state.debug + '"')
+    .option('-b, --content', `output packet message content for debugging, overrides "${state.content}"`)
+    .option('-r, --release [value]', `The release of the server software , overrides "${state.release}"`)
+    .option('-b, --verbose', `output verbose messages for debugging, overrides "${state.verbose}"`)
+    .option('-d, --debug', `output debug messages for debugging, overrides "${state.debug}"`)
     .parse(process.argv);
 
-// @param name - the name of the item in the state object
-// @param commanderProp - the optional commander (command line) argument name if different from name
-// #param configProp - optional configuration file prop name if different from name
-// Note - can be used for item that is not available on the command line, pass false for commanderProp
-function processConfigItem(name, commanderProp, configProp) {
-  if (!commanderProp && commanderProp !== false) {
-    commanderProp = name;
-  }
-  if (!configProp) {
-    configProp = name;
-  }
-  if (commanderProp !== false && commander[commanderProp]) {
-    logger.info(`Using command line parameter - ${commanderProp}, ${commander[commanderProp]}`);
-    state[name] = commander[commanderProp]; // command line overrides default
-  } else if (config[configProp]) {
-    logger.info(`Using config file parameter - ${configProp}, ${config[configProp]}`);
-    state[name] = config[configProp]; // config file overrides default
-  } else {
-    logger.info(`Using default parameter: - ${name}, ${state[name]}`);
-  }
-}
+commonLib.setVars(commander, logger, state);
+commonLib.readConfig();
+const processConfigItem = commonLib.processConfigItem;
+const resolvePath = commonLib.resolvePath;
+const setPath = commonLib.setPath;
 
 // Copy specified command line arguments into state
 commanderArgs.forEach((k) => {
   state.commandLine[k] = commander[k];
 });
 
-// Note - one cannot override the config file in the config file
-if (commander.config) {
-  logger.info(`Using command line parameter - config ${commander.config}`);
-  state.configFile = commander.config;
-} else {
-  logger.info(`default parameter - config ${state.configFile}`);
-}
-// Read the configuraton file
 try {
-  // read the file and parse it as JSON then don't need './filename.json', can just specify 'filename.json'
-  let configText = fs.readFileSync(state.configFile, 'utf8');
-  config = JSON.parse(configText);
-  // config = require(state.configFile); // using require to synchronously load JSON file parsed directly into an object
-
   //==================== --info ===========================
   if (commander.info) {
     logger.info('os.networkInterfaces...');
@@ -236,27 +216,26 @@ try {
   if (!state.autoConfig) {
     // validate config.report.period, it is ms report period
     if (typeof(config.monitor.sampleRate) === 'string') {
-      if (/^\d+$/.test(config.report.period)) {
-        // assume ms
-        config.monitor.sampleRate = Number.parseInt(config.monitor.sampleRate);
-      } else {
-        // todo - recognize '10m', etc.
-        logger.error(`monitor.sampleRate is not a positive integer "${config.monitor.sampleRate}"`);
-        process.exit(1);
-      }
+      // assume ms
+      config.monitor.sampleRate = parseDuration(config.monitor.sampleRate);
+    } else {
+      // todo - recognize '10m', etc.
+      logger.error(`monitor.sampleRate is not a positive integer "${config.monitor.sampleRate}"`);
+      process.exit(1);
     }
+
     // validate config.monitor
-    if (typeof(config.monitor.sampleRate) === 'number') {
-      if (config.monitor.sampleRate < 1000) {
-        logger.error('cannot accept monitor.sampleRate < 1000 ms');
-        process.exit(1);
-      }
+    if (config.monitor.sampleRate < 1000) {
+      logger.error(`cannot accept monitor.sampleRate < 1000 ms. You specified ${config.monitor.sampleRate}`);
+      process.exit(1);
     }
+
 
     if (!Array.isArray(config.monitor.connections)) {
       logger.error('missing config,monitor.connections array - nothing to monitor!');
       process.exit(1);
     }
+    // todo - validate array of connections
   }
 
   if (typeof(config.agent.apiBase) !== 'string') {
@@ -265,16 +244,11 @@ try {
   }
   //todo: config.agent.apiKeys
 
-  processConfigItem('verbose');
   if (state.verbose) {
     logger.info(JSON.stringify(config, null, '  '));
   }
 } catch (ex1) {
-  logger.error(`Cannot load configuration file ${state.configFile}`);
-  if (commander.verbose) {
-    logger.error(ex1.toString());
-  }
-  logger.error(`exception loading config file "${state.configFile}": ${ex1}`);
+  logger.error(`exception loading and processing config file "${state.configFile}": ${ex1}`);
   logger.error('Exiting...');
   process.exit(1);
 }
@@ -302,12 +276,6 @@ if (commander.content !== undefined) {
   // show packet content in log
   state.content = !!commander.content;
 }
-if (commander.verbose !== undefined) {
-  state.verbose = !!commander.verbose;
-}
-if (commander.debug !== undefined) {
-  state.debug = !!commander.debug;
-}
 if (state.debug) {
   logger.info(JSON.stringify(state, null, ' '));
 }
@@ -315,7 +283,7 @@ if (state.debug) {
 //====================== monitoring =======================
 function startMonitoring() {
   // state.config.monitor.connections.forEach(conn => {
-  //   // will update samples[connectionId]
+  //   // will update samplesIndex[connectionId]
   //   monitorConnection(conn); // set up to monitor
   // });
   if (state.verbose) {
@@ -355,11 +323,13 @@ function report() {
       duration: 10000,
       connections: samples.map(s => {
         return {
-          connectionId: s.connectionId,
+          interfaceId: s.interfaceId,
           charCount: s.charCount,
           packetCount: s.packetCount,
-          lastMessageTimestamp: s.lastMessageTimestamp,
-          disconnected: s.disconnected
+          disconnected: s.disconnected,
+          sourceNoPing: s.sourceNoPing,
+          targetNoPing: s.targetNoPing,
+          lastMessageTimestamp: s.lastMessageTimestamp
         };
       })
     }
@@ -369,7 +339,7 @@ function report() {
     logger.info(JSON.stringify(send, null, '  '));
   }
 
-  samples = []; // reset. Will accumulate for new sampling period
+  samples.length = 0; // reset. Will accumulate for new sampling period
   samplesIndex = {};
 
   request({
@@ -419,7 +389,7 @@ function resetMonitoring(oldConnections, newConnections) {
     }
   });
   newOnes.forEach(conn => {
-    // will update samples[connectionId]
+    // will update samplesIndex[connectionId]
     monitorConnection(conn); // set up to monitor
   });
 }
@@ -550,7 +520,7 @@ function monitorConnection(conn) {
   });
 }
 
-function getConfig() {
+function makeGetConfigRequest() {
   state.getAutoConfigUrl = `${state.config.agent.apiBase}sensor/autoConfig`
       + `?sensorId=${encodeURI(state.config.sensor.sensorId)}`
       + `&agentId=${encodeURI(state.config.agent.agentId)}`
@@ -566,7 +536,7 @@ function getConfig() {
 }
 
 if (state.autoConfig) {
-  getConfig().then((obj) => {
+  makeGetConfigRequest().then((obj) => {
     const errors = [];
     // validate contents
     if (obj.customerId !== state.config.sensor.customerId) {
@@ -582,7 +552,7 @@ if (state.autoConfig) {
       state.config.monitor = state.config.monitor || {};
       state.config.monitor.version = obj.version;
       state.config.monitor.name = obj.name;
-      state.config.monitor.sampleRate = obj.sampleRate;
+      state.config.monitor.sampleRate = durationParser(obj.sampleRate);
       state.config.monitor.device = obj.device;
       state.config.monitor.deviceName = obj.deviceName;
       state.config.monitor.connections = obj.connections;
