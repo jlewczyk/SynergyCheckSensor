@@ -95,16 +95,26 @@ const state = {
   swagger: {  // autoConfig or explcit in config file
     swaggerFile: './swagger/agent.yaml',
   },
+  server: {}, // from autoConfig - synergyCheck thinks this is this agent's server config
   report: {
-    autoReport: true
+    autoReport: true,
+    period: 60000,
+    dur: '60s', // 60 second default
+    compress: true // true means leave out configured interfaces that have not reported
   }, // autoConfig or explicit in config file
   sensors: [], // autoConfig or explicit in config file
   started: started.toISOString(),
   sensorsAccum: [], // list of sensors supplying data accumulated for next report to synergyCheck
   connectionsAccum: [], // list of connections reported by sensors accumulated for current report period
   transactionCounter: 0, // incremented for each report to synergyCheck and included in its tx
-  agentReportsSent: 0,
-  agentReportErrors: 0,
+  agentReports: {
+    sent: 0,
+    errors: 0,
+    retries: 0,
+    maxRetries: 10,
+    sendDelay: 10000
+  },
+  agentReportQueue: [],
   verbose: false,
   debug: false
 };
@@ -126,7 +136,7 @@ const configKeys = [
     'synergyCheck.port',
     'synergyCheck.apiBase', // for api calls to synergyCheck.com
     'synergyCheck.customerId', // string
-    'report.period', // integer >= 0
+    'report.period', // duration or mills
     'report.compress', // boolean
     'sensors' // array of Sensor objects
     ];
@@ -223,17 +233,20 @@ if (typeof(state.agent.agentId) === 'string' && state.agent.agentId.length === 0
 //------------ validate the properties in the state.sensors -----------
 // todo
 if (state.autoConfig) {
-  if (typeof(state.sensors) !== 'undefined' && state.sensors.length) {
+  if (typeof(state.config.sensors) !== 'undefined' && state.config.sensors.length) {
     logger.info('state.sensors ignored when autoConfig is enabled. It will be auto configured');
   }
 }
 
 //------------ validate the properties in the config.report ------------
 if (state.autoConfig) {
-  if (typeof(state.report) !== 'undefined') {
-    logger.info('state.report ignored when autoConfig is enabled. It will be auto configured');
+  if (typeof(state.config.report) !== 'undefined' && Object.keys(state.config.report).length) {
+    logger.info('state.report properties may be overriden when autoConfig is enabled. It will be auto configured');
   }
 } else {
+  processReportingPeriod();
+}
+function processReportingPeriod() {
   if (typeof(state.report.period) === 'string') {
     state.report.period = durationParser(state.report.period);
     if (state.report.period <= 0) {
@@ -242,10 +255,16 @@ if (state.autoConfig) {
       process.exit(1);
     }
   }
+  if (Number.isNaN(+state.report.period)) {
+    logger.error('cannot accept report.period is not a number');
+    process.exit(1);
+  }
   if (state.report.period < 1000) {
     logger.error('cannot accept report.period < 1000 ms');
     process.exit(1);
   }
+  // This will be in the agentReport, which needs a string
+  state.report.dur = `${Math.floor(state.report.period / 1000)}s`; // e.g. '60s'
 }
 
 processConfigItem('autoReport', 'autoReport', 'report.autoReport');
@@ -412,8 +431,10 @@ initializeSwagger(app, swaggerDocument).then(() => {
             // todo - is this new than what we have?  If not, can ignore it
             // for use when agent polls server for most recent config so can auto update!
           }
-          state.report = configObj.report; // todo - validate
-          state.sensors = configObj.sensors; // todo - validate
+          Object.assign(state.server, configObj.server || {});
+          Object.assign(state.report, configObj.report || {}); // todo - validate
+          processReportingPeriod();
+          Object.assign(state.sensors, configObj.sensors || {}); // todo - validate
 
           // todo - validate configuration data and incorporate
           if (errors.length) {

@@ -28,11 +28,12 @@ const PROTOCOL = decoders.PROTOCOL;
 const request = require('request-promise-native');
 const durationParser = require('duration-parser');
 const commonLib   = require('./lib/common');
+const colors = require('colors');
 
 const bufSize = 10 * 1024 * 1024;
 const buffer = Buffer.alloc(65535);
 
-var config; // loaded configuration file (see also state.config
+let config; // loaded configuration file (see also state.config
 
 var monitored = {}; // key is `${src}|${dst}|${port}` -> { connection, cap }
 // for a short window, existingConnections may not equal state.config.monitor.connections
@@ -45,15 +46,23 @@ var started = new Date();
 // used to generate unique transaction number
 // by combining this with the id of the sensor and a counter
 const startedMills = started.getTime();
-let transactionCounter = 0;
 
 // TO DO - real logger!
 const logger = {
   info: function () {
-    console.info.apply(null, arguments);
+    console.info.apply(null, Array.from(arguments).map(a => colors.white(a)));
   },
   error: function () {
-    console.error.apply(null, arguments);
+    console.error.apply(null, Array.from(arguments).map(a => colors.red(a)));
+  },
+  warning: function() {
+    console.log.apply(null, Array.from(arguments).map(a => colors.yellow(a)));
+  },
+  success: function() {
+    console.log.apply(null, Array.from(arguments).map(a => colors.green(a)));
+  },
+  debug: function() {
+    console.log.apply(null, Array.from(arguments).map(a => colors.gray(a)));
   }
 };
 
@@ -99,6 +108,7 @@ const state = {
   config: {},
   content: false,
   started: started.toISOString(),
+  transactionCounter: 0,
   verbose: false,
   debug: false
 };
@@ -124,7 +134,7 @@ commonLib.readConfig();
 const processConfigItem = commonLib.processConfigItem;
 const resolvePath = commonLib.resolvePath;
 const setPath = commonLib.setPath;
-
+config = state.config.
 // Copy specified command line arguments into state
 commanderArgs.forEach((k) => {
   state.commandLine[k] = commander[k];
@@ -310,8 +320,8 @@ function report() {
 
   // generate unique transaction number
   // by combining this with the id of the sensor and a counter
-  transactionCounter++;
-  let transactionId = `${state.config.sensor.sensorId}|${startedMills}|${transactionCounter}`
+  state.transactionCounter++;
+  const transactionId = `${state.config.sensor.sensorId}|${startedMills}|${state.transactionCounter}`
   state.lastTransactionId = transactionId;
 
   let send = {
@@ -520,7 +530,7 @@ function monitorConnection(conn) {
   });
 }
 
-function makeGetConfigRequest() {
+function makeGetAutoConfigRequest() {
   state.getAutoConfigUrl = `${state.config.agent.apiBase}sensor/autoConfig`
       + `?sensorId=${encodeURI(state.config.sensor.sensorId)}`
       + `&agentId=${encodeURI(state.config.agent.agentId)}`
@@ -536,7 +546,7 @@ function makeGetConfigRequest() {
 }
 
 if (state.autoConfig) {
-  makeGetConfigRequest().then((obj) => {
+  makeGetAutoConfigRequest().then((obj) => {
     const errors = [];
     // validate contents
     if (obj.customerId !== state.config.sensor.customerId) {

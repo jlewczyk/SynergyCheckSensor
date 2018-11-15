@@ -22,10 +22,8 @@ tags:
   externalDocs:
     description: Find out more
     url: 'http://synergyCheck.com/info'
-- name: agentRoutes
-  description: agent management
 schemes:
-- http
+- https #___PROTOCOL___
 paths:
   /ping:
     get:
@@ -161,6 +159,7 @@ paths:
       - sensor
       summary: get automatic configuration information for specified sensorId
       description: something here
+      x-swagger-router-controller: agentRoutes
       operationId: getSensorAutoConfig
       parameters:
       - name: sensorId
@@ -241,28 +240,27 @@ definitions:
           connections:
             type: array
             items:
-              $ref: '#/definitions/SensorConnection'
-  SensorConnection:
+              $ref: '#/definitions/SensorReportConnection'
+  SensorReportConnection:
     type: object
     properties:
-      interfaceId:
-        type: integer
-        format: int64
+      interfaceUid:
+        type: string
       charCount:
         type: integer
         format: int64
       packetCount:
         type: integer
         format: int64
-      lastMessageTimestamp: # not sure how useful this is - not being forwarded by Agent in agentReport
-        type: string
-        format: datetime
       disconnected: # nmap says no connection exists between source and target
         type: boolean
       sourceNoPing: # source does not respond to ping
         type: boolean
       targetNoPing: # target does not respond to ping
         type: boolean
+      lastMessageTimestamp: # not sure how useful this is - not being forwarded by Agent in agentReport
+        type: string
+        format: datetime
   Ping:
     type: object
     properties:
@@ -376,17 +374,17 @@ definitions:
       version: # of configuration (increases once per saved update of sensor config)
         type: integer
         format: int64
-      customerId:
+      customer_id:
         type: string
-      agentId:
+      agent_id:
+        type: string
+      sensor_id:
         type: string
       name: # of sensor
         type: string
-      sensorId:
+      device: # identifier of ethernet device to monitor (used by pcap)
         type: string
-      device: # identifier of ethernet device to monitor
-        type: string
-      deviceName: # external name of ethernet device being monitored
+      deviceName: # external name of ethernet device being monitored (documentation only)
         type: string
       sampleRate: # how often to sample traffic - can be miilis or string '10s'
         type: string
@@ -397,17 +395,22 @@ definitions:
   ConnectionConfig:
     type: object
     properties:
-      kind:
+      kind: # one of 'tcp/ip','web','file'
+        type: string
+      measure: # 'cc,pc,disc,snp,tnp'
         type: string
       src:
         type: string
       dst:
         type: string
       port:
-        type: string
-      connectionId:
         type: integer
-        format: int64
+        format: unsigned
+      interfaceUid:
+        type: string
+      connection_id:
+        type: string
+        format: oid
   SensorAutoConfig:
     type: object
     properties:

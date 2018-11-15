@@ -1,16 +1,20 @@
 ---
+comment: using auto configuration to provide configuration of what to monitor in connections array
 sensor:
-  sensorId: c9b1babb-2189-4d62-90a1-8376a6eac2b8
-  name: Canary1
+  sensorId: 5bec6f6dae989600f891dc83
+  name: canary1
   created:
-    when: 2018 Jun 21, 10:30 am EDT
+    when: 2018-11-14T20:05:17.393Z
     by: Lewczyk,John
-  customerId: 6ea2967d-29f3-4dd3-a7ee-eb1b777ba20c
+synergyCheck:
+  customerId: 5b8980bb9456dc0014456008
 agent:
-  agentId: 194bb4a0-21e1-41ff-a736-8158c1760e95
-  apiBase: http://localhost:19999/api/v1/
+  agentId: 5beba29fbd539721b4c4744c
+  autoConfig: true
+  httpProtocol: http
+  hostName: localhost
+  port: 19999 # this agent listens on this port
   apiKeys:
   - 6ff8b366-36ea-429d-8ab5-6c21fff37485
   - 59671f72-c20c-48dc-b096-709123150cdb
 heartbeat: 30000
-comment: using auto configuration to provide sensor's configuration
