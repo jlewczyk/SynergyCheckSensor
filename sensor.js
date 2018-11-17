@@ -35,12 +35,12 @@ const buffer = Buffer.alloc(65535);
 
 let config; // loaded configuration file (see also state.config
 
-var monitored = {}; // key is `${src}|${dst}|${port}` -> { connection, cap }
-// for a short window, existingConnections may not equal state.config.monitor.connections
-var existingConnections = []; // what is currently being monitored
+let monitored = {}; // key is `${src}|${dst}|${port}` -> { connection, cap }
+// note for a short time window, existingConnections may not equal state.monitor.connections
+let existingConnections = []; // what is currently being monitored
 // this is re-initialized to empty object for each sample period
-var samples = []; // connection data { charCount, packets, disconnected, lastMessageTimestamp }
-var samplesIndex = {}; // by connectionId -> connection data
+const samples = []; // connection data { charCount, packets, disconnected, lastMessageTimestamp }
+let samplesIndex = {}; // by interfaceUid -> connection data
 
 var started = new Date();
 // used to generate unique transaction number
@@ -89,6 +89,7 @@ const commanderArgs = [
   'filter',
   'port',
   'content',
+  'noReport',
   'release',
   'verbose',
   'debug'
@@ -96,19 +97,30 @@ const commanderArgs = [
 
 const state = {
   release: '0.0.1', // todo
-  configFile: 'sensor.json',
+  configFile: 'sensor.yaml',
   autoConfig: false, // complete configuration by requesting from agent
   getAutoConfigUrl: '', // when performing autoConfig fetch
   postReportUrl: '', // when reporting sensor data to agent
   find: '',
   filter: 'tcp and dst port ${this.port}', // can ref values in state object
-  device: '192.168.1.5',
-  port: 80,
   commandLine: {},
-  config: {},
+  config: {}, // copy of the original configuration file properties
   content: false,
   started: started.toISOString(),
   transactionCounter: 0,
+  agent: {
+    jwt: ''
+    // provided by config or autoConfig
+  },
+  monitor: {
+    sampleRate: 10000,
+    version: '?', // supply from config or autoConfig
+    name: '?', // supply from config or autoConfig
+    device: '', // supply by config or autoConfig
+    deviceName: '', // supply by config or autoConfig (documentation only)
+    noReport: false // if true, suppress sending sensorReports
+  },
+  connections: [], // config or autoConfig - what connections to monitor
   verbose: false,
   debug: false
 };
@@ -119,14 +131,15 @@ commander
     .option(`-a, --auto`, `perform auto configuration from synergyCheck server specified`)
     .option('-l, --info', 'display OS information on ethernet interfaces devices on this machine.')
     .option('-l, --list', 'list devices on this machine.  Pick one and run again specifying --device xxxx')
-    .option('-f, --find [value]', `find first device with specified ip ${state.find}"`)
-    .option('-d, --device [value]', `The device name to monitor, overrides config "${state.device}"`)
+    .option('-f, --find [value]', `find first device with specified ip`)
+    .option('-d, --device [value]', `The ethernet device name to monitor, overrides config "${state.monitor.device}"`)
     .option('-x, --filter [value]', `filter expression ${state.filter}"`)
     .option('-p, --port [value]', 'port the web server is listening on, override default of 80 or 443 depending on http or https')
     .option('-b, --content', `output packet message content for debugging, overrides "${state.content}"`)
+    .option('-n, --noReport', `do not send sensorReports to agent (for local debugging)`)
     .option('-r, --release [value]', `The release of the server software , overrides "${state.release}"`)
     .option('-b, --verbose', `output verbose messages for debugging, overrides "${state.verbose}"`)
-    .option('-d, --debug', `output debug messages for debugging, overrides "${state.debug}"`)
+    .option('-d, --debug', `output debug messages for debugging, overrides "${state.debugMode}"`)
     .parse(process.argv);
 
 commonLib.setVars(commander, logger, state);
@@ -134,7 +147,7 @@ commonLib.readConfig();
 const processConfigItem = commonLib.processConfigItem;
 const resolvePath = commonLib.resolvePath;
 const setPath = commonLib.setPath;
-config = state.config.
+
 // Copy specified command line arguments into state
 commanderArgs.forEach((k) => {
   state.commandLine[k] = commander[k];
@@ -165,108 +178,130 @@ try {
         });
       }
     });
-    if (state.debug) {
+    if (state.debugMode) {
       logger.info(JSON.stringify(Cap.deviceList(), null, '  '));
     }
     process.exit(0);
   }
   //====================  --find ==========================
-  if (state.find !== '') {
+  if (commander.find) {
     let device;
-    if (state.find === true) {
+    if (commander.find === true) {
       device = Cap.findDevice();
     } else {
-      device = Cap.findDevice(state.find);
+      device = Cap.findDevice(commander.find);
     }
-    logger.info(`find "${state.find}"`);
+    logger.info(`find "${commander.find}"...`);
     if (device !== undefined) {
       logger.info(`Found device: ${device}`);
     } else {
-      logger.info(`device not found: "${state.find}"`)
+      logger.info(`device not found: "${commander.find}"`)
     }
     process.exit(0);
   }
 
+  processConfigItem('monitor.noReport', 'noReport', 'noReport');
   //============= validate the properties in the config for monitor mode ============
-  processConfigItem('autoConfig', 'auto');
+  processConfigItem('autoConfig', 'auto', 'agent.autoConfig');
   if (state.autoConfig) {
-    ['sensor', 'agent'].forEach(name => {
-      if (typeof(config[name]) !== 'object') {
-        logger.error(`for autoConfig, missing ${name} object in config file`);
+    ['connections'].forEach(name => {
+      if (typeof(state.config[name]) !== 'undefined') {
+        logger.warning(`for autoConfig, config file entry ${name} provided by auto config`);
         process.exit(1);
       }
     });
-    if (typeof(config.monitor) !== 'undefined') {
-      logger.info('config.monitor ignored when autoConfig is enabled. It will be auto configured');
+    if (typeof(state.config.monitor) !== 'undefined' && Object.keys(state.config.monitor).length) {
+      logger.warning('config.monitor specified when autoConfig is enabled, may overwriting some autoConfig settings');
     }
   } else {
-    ['sensor', 'agent', 'monitor'].forEach(name => {
-      if (typeof(config[name]) !== 'object') {
-        logger.error(`for non-autoConfig, missing ${name} object in config file`);
+    ['sensor', 'agent', 'synergyCheck', 'monitor', 'connections'].forEach(name => {
+      if (typeof(state.config[name]) !== 'object') {
+        logger.error(`for non-autoConfig, ${name} object in config file is required`);
         process.exit(1);
       }
     });
   }
+  const errors = [];
+  if (!state.config.agent.httpProtocol) {
+    errors.push(`Missing state.config.agent.httpProtocol property`);
+  }
+  if (!state.config.agent.hostName) {
+    errors.push(`Missing state.config.agent.hostName property`);
+  }
+  if (!state.config.agent.port) {
+    errors.push(`Missing state.config.agent.port property`);
+  }
+  if (!state.config.agent.apiBase) {
+    errors.push(`Missing state.config.agent.apiBase property`);
+  }
+  if (errors.length) {
+    errors.forEach(e => logger.error(e));
+    process.exit(1);
+  }
+// Setup for communicating with SynergyCheck - ping, authenticate, autoConfig, post agentReports,...
+  commonLib.setProtoHostPort(`${state.config.agent.httpProtocol || 'http'}://${state.config.agent.hostName}:${state.config.agent.port || 80}`);
 
   // Copy original config file values into state.config
-  state.config = {};
-  Object.keys(config).forEach((k) => {
-    state.config[k] = config[k];
-  });
+  // state.config = {};
+  // Object.keys(state.config).forEach((k) => {
+  //   state.config[k] = config[k];
+  // });
 
   // validate config.sensor
-  if (typeof(config.sensor.sensorId) !== 'string') {
+  if (typeof(state.config.sensor.sensorId) !== 'string') {
     logger.error('missing string sensor.sensorId');
     process.exit(1);
   }
-  if (typeof(config.sensor.customerId) !== 'string') {
-    logger.error('missing string sensor.customerId');
+  state.sensorId = state.config.sensor.sensorId;
+  if (typeof(state.config.synergyCheck.customerId) !== 'string') {
+    logger.error('missing string synergyCheck.customerId');
     process.exit(1);
   }
-  if (!state.autoConfig) {
-    // validate config.report.period, it is ms report period
-    if (typeof(config.monitor.sampleRate) === 'string') {
-      // assume ms
-      config.monitor.sampleRate = parseDuration(config.monitor.sampleRate);
-    } else {
-      // todo - recognize '10m', etc.
-      logger.error(`monitor.sampleRate is not a positive integer "${config.monitor.sampleRate}"`);
+  state.customerId = state.config.synergyCheck.customerId;
+
+  if (state.config.monitor) {
+    // validate state.config.monitor.sampleRate, it is ms report period
+    if (typeof(state.config.monitor.sampleRate) === 'string') {
+      // recognize '10m', etc.
+      state.config.monitor.sampleRate = parseDuration(state.config.monitor.sampleRate);
+    } else if (typeof(state.config.monitor.sampleRate) !== 'number') {
+      logger.error(`monitor.sampleRate is not a positive integer "${state.config.monitor.sampleRate}"`);
+      process.exit(1);
+    }
+    // assume ms
+    // validate sampleRate
+    if (state.config.monitor.sampleRate < 1000) {
+      logger.error(`cannot accept monitor.sampleRate < 1000 ms. You specified ${state.config.monitor.sampleRate}`);
       process.exit(1);
     }
 
-    // validate config.monitor
-    if (config.monitor.sampleRate < 1000) {
-      logger.error(`cannot accept monitor.sampleRate < 1000 ms. You specified ${config.monitor.sampleRate}`);
-      process.exit(1);
+    if (typeof(state.config.monitor.connections) !== 'undefined') {
+      if (!Array.isArray(state.config.monitor.connections)) {
+        logger.error('missing config,monitor.connections array - nothing to monitor!');
+        process.exit(1);
+      }
+      if (state.config.monitor.connections.length && state.autoConfig) {
+        logger.warning(`When autoConfig is specified, connections in config file will be ignored`);
+        process.exit(1);
+      }
+      // todo - validate array of connections
     }
-
-
-    if (!Array.isArray(config.monitor.connections)) {
-      logger.error('missing config,monitor.connections array - nothing to monitor!');
-      process.exit(1);
-    }
-    // todo - validate array of connections
   }
 
-  if (typeof(config.agent.apiBase) !== 'string') {
+  if (typeof(state.config.agent.apiBase) !== 'string') {
     logger.error('missing config.agent.apiBase');
     process.exit(1);
   }
   //todo: config.agent.apiKeys
 
   if (state.verbose) {
-    logger.info(JSON.stringify(config, null, '  '));
+    logger.info(JSON.stringify(state.config, null, '  '));
   }
 } catch (ex1) {
   logger.error(`exception loading and processing config file "${state.configFile}": ${ex1}`);
   logger.error('Exiting...');
   process.exit(1);
 }
-
-// Copy specified command line arguments into state
-commanderArgs.forEach(function (k) {
-  state.commandLine[k] = commander[k];
-});
 
 if (commander.find !== undefined) {
   state.find = commander.find;
@@ -276,8 +311,7 @@ if (commander.filter !== undefined) {
 }
 if (commander.device !== undefined) {
   if (state.autoConfig) {
-    logging.error('do not specify device is autoConfig');
-    process.exit(1);
+    logger.warning(`specified device on command when autoConfig, will override autoconfig with device "${commander.device}"`);
   }
   // the ethernet device to monitor
   state.monitor.device = commander.device;
@@ -286,22 +320,18 @@ if (commander.content !== undefined) {
   // show packet content in log
   state.content = !!commander.content;
 }
-if (state.debug) {
+if (state.debugMode) {
   logger.info(JSON.stringify(state, null, ' '));
 }
 
 //====================== monitoring =======================
 function startMonitoring() {
-  // state.config.monitor.connections.forEach(conn => {
-  //   // will update samplesIndex[connectionId]
-  //   monitorConnection(conn); // set up to monitor
-  // });
   if (state.verbose) {
-    logger.info(`monitor ${JSON.stringify(state.config.monitor, null, '  ')}`);
+    logger.info(`monitor ${JSON.stringify(state.monitor, null, '  ')}`);
   }
-  resetMonitoring(existingConnections, state.config.monitor.connections)
+  resetMonitoring(existingConnections, state.connections);
   // remember what we just set up
-  existingConnections = state.config.monitor.connections;
+  existingConnections = state.connections;
 
   // initiate reporting
   const timer = setInterval(function () {
@@ -309,11 +339,11 @@ function startMonitoring() {
     logger.info(`time to report ${timestampISO}`);
     report();
 
-  }, state.config.monitor.sampleRate); // ms between reporting
+  }, state.monitor.sampleRate); // ms between reporting
 }
 
-state.postReportUrl = `${state.config.agent.apiBase}sensor/report`;
-logger.info(`report to url: ${state.postReportUrl}`);
+state.postReportUrl = `${commonLib.getProtoHostPort()}${state.config.agent.apiBase}sensor/report`;
+logger.info(`reports to url: ${state.postReportUrl}`);
 
 // send report to the agent, and ready for next sample
 function report() {
@@ -321,16 +351,16 @@ function report() {
   // generate unique transaction number
   // by combining this with the id of the sensor and a counter
   state.transactionCounter++;
-  const transactionId = `${state.config.sensor.sensorId}|${startedMills}|${state.transactionCounter}`
+  const transactionId = `${state.sensorId}|${startedMills}|${state.transactionCounter}`;
   state.lastTransactionId = transactionId;
 
-  let send = {
+  const send = {
     snapshot: {
-      sensorId: state.config.sensor.sensorId,
-      customerId: state.config.sensor.customerId,
+      sensorId: state.sensorId,
+      customerId: state.customerId,
       timestamp: new Date().toISOString(),
       transactionId: transactionId,
-      duration: 10000,
+      duration: '10s',
       connections: samples.map(s => {
         return {
           interfaceId: s.interfaceId,
@@ -345,23 +375,28 @@ function report() {
     }
   };
 
-  if (state.debug) {
+  if (state.monitor.noReport) {
+    logger.warn(`noReport set, would have sent the following at ${new Date().toLocaleString()}...`);
+    logger.info(JSON.stringify(send, null, '  '));
+  } else if (state.debugMode) {
     logger.info(JSON.stringify(send, null, '  '));
   }
 
   samples.length = 0; // reset. Will accumulate for new sampling period
   samplesIndex = {};
 
-  request({
-    method: 'POST',
-    uri: state.postReportUrl,
-    body: send,
-    json: true // automatically stringifies body
-  }).then(obj => {
-    logger.info(JSON.stringify(obj));
-  }).catch(err => {
-    logger.error(err);
-  });
+  if (!state.monitor.noReport) {
+    request({
+      method: 'POST',
+      uri: state.postReportUrl,
+      body: send,
+      json: true // automatically stringifies body
+    }).then(obj => {
+      logger.info(JSON.stringify(obj));
+    }).catch(err => {
+      logger.error(err);
+    });
+  }
 }
 
 // compares old set of connections (empty if first time) with the
@@ -371,13 +406,13 @@ function resetMonitoring(oldConnections, newConnections) {
   let newOnes = newConnections.filter(conn => {
     return !monitored[`${conn.src}|${conn.dst}|${conn.port}`];
   });
-  if (state.debug) {
+  if (state.debugMode) {
     logger.info(`newOnes: ${JSON.stringify(newOnes, null, '  ')}`);
   }
   let existingOnes = newConnections.filter(conn => {
     return monitored[`${conn.src}|${conn.dst}|${conn.port}`];
   });
-  if (state.debug) {
+  if (state.debugMode) {
     logger.info(`existingOnes: ${JSON.stringify(existingOnes, null, '  ')}`);
   }
   let removeThese = oldConnections.filter(oc => {
@@ -385,7 +420,7 @@ function resetMonitoring(oldConnections, newConnections) {
       return nc.src === oc.src && nc.dst === oc.dst && nc.port === oc.port;
     })
   });
-  if (state.debug) {
+  if (state.debugMode) {
     logger.info(`removeThese: ${JSON.stringify(removeThese, null, '  ')}`);
   }
   // if existing connections monitored and they are NOT in the new set of connections
@@ -399,7 +434,7 @@ function resetMonitoring(oldConnections, newConnections) {
     }
   });
   newOnes.forEach(conn => {
-    // will update samplesIndex[connectionId]
+    // will update samplesIndex[interfaceUid]
     monitorConnection(conn); // set up to monitor
   });
 }
@@ -418,14 +453,22 @@ function monitorConnection(conn) {
   };
 
   const filter = `tcp and src host ${conn.src} and dst host ${conn.dst} and dst port ${conn.port}`;
-  logger.info(`${conn.connectionId} -> monitor device ${conn.device} filter '${filter}'`);
-  const linkType = cap.open(state.config.monitor.device, filter, bufSize, buffer);
-  logger.info(`${conn.connectionId} -> linkType=${linkType}`);
+  logger.info(`${conn.interfaceUid} -> monitor ethernet device ${state.monitor.device} filter '${filter}'`);
+  let linkType;
+  try {
+    linkType = cap.open(state.monitor.device, filter, bufSize, buffer);
+  } catch (ex) {
+    console.error(`Error opening defined ${state.monitor.device}, ${ex}`);
+    console.error(`for ${conn.src}|${conn.dst}|${conn.port}`);
+    process.exit(1);
+    return;
+  }
+  logger.info(`${conn.interfaceUid} -> linkType=${linkType}`);
 
   cap.setMinBytes && cap.setMinBytes(0); // windows only todo
 
   cap.on('packet', function (nbytes, trunc) {
-    logger.info(`${conn.connectionId} -> ${new Date().toLocaleString()} packet: length ${nbytes} bytes, truncated? ${trunc ? 'yes' : 'no'}`);
+    logger.info(`${conn.interfaceUid} -> ${new Date().toLocaleString()} packet: length ${nbytes} bytes, truncated? ${trunc ? 'yes' : 'no'}`);
 
     let error;
     const errors = [];
@@ -435,39 +478,39 @@ function monitorConnection(conn) {
       let eth = decoders.Ethernet(buffer);
 
       if (eth.info.type === PROTOCOL.ETHERNET.IPV4) {
-        if (state.debug) {
+        if (state.debugMode) {
           logger.info('    Decoding IPv4 ...');
         }
 
         let ipv4 = decoders.IPV4(buffer, eth.offset);
-        if (state.debug || state.verbose) {
+        if (state.debugMode || state.verbose) {
           logger.info(`    IPv4 info - from: ${ipv4.info.srcaddr} to ${ipv4.info.dstaddr}`);
         }
 
         // verify filter works!
         if (conn.src !== ipv4.info.srcaddr) {
-          error = `${conn.connectionId} expecting src to be ${conn.src} but it is ${ipv4.info.srcaddr}`;
+          error = `${conn.interfaceUid} expecting src to be ${conn.src} but it is ${ipv4.info.srcaddr}`;
           errors.push(error);
         }
         if (conn.dst !== ipv4.info.dstaddr) {
-          error = `${conn.connectionId} expecting src to be ${conn.dst} but it is ${ipv4.info.dstaddr}`;
+          error = `${conn.interfaceUid} expecting src to be ${conn.dst} but it is ${ipv4.info.dstaddr}`;
           errors.push(error);
         }
 
         if (!errors.length) {
           if (ipv4.info.protocol === PROTOCOL.IP.TCP) {
             let datalen = ipv4.info.totallen - ipv4.hdrlen;
-            if (state.debug) {
+            if (state.debugMode) {
               logger.info('    Decoding TCP ...');
             }
 
             let tcp = decoders.TCP(buffer, ipv4.offset);
-            if (state.debug || state.verbose) {
+            if (state.debugMode || state.verbose) {
               logger.info(`    TCP info - from port: ${tcp.info.srcport} to port: ${tcp.info.dstport} length ${datalen}`);
             }
 
             if (conn.port !== tcp.info.dstport) {
-              logger.error(`    ${conn.connectionId} expecting port to be ${conn.port} but it is ${tcp.info.dstport}`);
+              logger.error(`    ${conn.interfaceUid} expecting port to be ${conn.port} but it is ${tcp.info.dstport}`);
             }
 
             datalen -= tcp.hdrlen;
@@ -481,19 +524,19 @@ function monitorConnection(conn) {
               return; // filter out empty packets
             }
 
-            if (!state.debug && !state.verbose) {
+            if (!state.debugMode && !state.verbose) {
               logger.info(`    IPv4 TCP from ${ipv4.info.srcaddr}:${tcp.info.srcport} to ${ipv4.info.dstaddr}:${tcp.info.dstport} length=${datalen}`);
             }
-            // by connectionId -> { charCount, packets, disconnected, lastMessageTimestamp }
-            let sample = samplesIndex[conn.connectionId];
+            // by interfaceUid -> { charCount, packets, disconnected, lastMessageTimestamp }
+            let sample = samplesIndex[conn.interfaceUid];
             if (!sample) {
               sample = {
-                connectionId: conn.connectionId,
+                interfaceUid: conn.interfaceUid,
                 charCount: 0,
                 packetCount: 0,
                 disconnected: false
               };
-              samplesIndex[conn.connectionId] = sample;
+              samplesIndex[conn.interfaceUid] = sample;
               samples.push(sample); // convenience array
             }
             sample.charCount += datalen;
@@ -501,17 +544,17 @@ function monitorConnection(conn) {
             sample.lastMessageTimestamp = new Date().toISOString();
 
           } else if (ipv4.info.protocol === PROTOCOL.IP.UDP) {
-            if (state.verbose || state.debug) {
+            if (state.verbose || state.debugMode) {
               logger.info('    Decoding UDP ...');
             }
 
             let udp = decoders.UDP(buffer, ipv4.offset);
-            if (state.debug || state.verbose) {
+            if (state.debugMode || state.verbose) {
               logger.info(`    UDP info - from port: ${udp.info.srcport} to port: ${udp.info.dstport}`);
             }
             if (state.content) {
               let content = buffer.toString('binary', udp.offset, udp.offset + udp.info.length);
-              if (state.debug || state.verbose) {
+              if (state.debugMode || state.verbose) {
                 logger.info(`    ${content}`);
               }
             }
@@ -530,42 +573,51 @@ function monitorConnection(conn) {
   });
 }
 
-function makeGetAutoConfigRequest() {
-  state.getAutoConfigUrl = `${state.config.agent.apiBase}sensor/autoConfig`
-      + `?sensorId=${encodeURI(state.config.sensor.sensorId)}`
-      + `&agentId=${encodeURI(state.config.agent.agentId)}`
-      + `&customerId=${encodeURI(state.config.sensor.customerId)}`;
-  if (state.verbose) {
-    logger.info(`auto configuration call GET ${state.getAutoConfigUrl}`);
-  }
-  return request({
+if (state.autoConfig) {
+  state.getAutoConfigUrl =
+    commonLib.getProtoHostPort()
+    + `${state.config.agent.apiBase}sensor/autoConfig`
+    + `?sensorId=${encodeURI(state.sensorId)}`
+    + `&agentId=${encodeURI(state.config.agent.agentId)}`
+    + `&customerId=${encodeURI(state.customerId)}`;
+  logger.info(`auto configuration call GET ${state.getAutoConfigUrl}`);
+  request({
     method: 'GET',
     uri: state.getAutoConfigUrl,
-    json: true
-  })
-}
-
-if (state.autoConfig) {
-  makeGetAutoConfigRequest().then((obj) => {
+    json: true,
+    headers: {
+      'Authorization': `Bearer ${state.agent.jwt}`
+    },
+  }).then((configObj) => {
     const errors = [];
     // validate contents
-    if (obj.customerId !== state.config.sensor.customerId) {
-      errors.push(`unexpected customerId "${obj.customerId}"`);
+    if (configObj.customerId !== state.customerId) {
+      errors.push(`unexpected customerId "${configObj.customerId}"`);
     }
-    if (obj.agentId !== state.config.agent.agentId) {
-      errors.push(`unexpected agentId "${obj.agentId}"`);
+    if (configObj.agentId !== state.config.agent.agentId) {
+      errors.push(`unexpected agentId "${configObj.agentId}"`);
     }
-    if (obj.sensorId !== state.config.sensor.sensorId) {
-      errors.push(`unexpected customerId "${obj.sensorId}"`);
+    if (configObj.sensorId !== state.config.sensor.sensorId) {
+      errors.push(`unexpected sensorId "${configObj.sensorId}"`);
     }
     if (errors.length === 0) {
-      state.config.monitor = state.config.monitor || {};
-      state.config.monitor.version = obj.version;
-      state.config.monitor.name = obj.name;
-      state.config.monitor.sampleRate = durationParser(obj.sampleRate);
-      state.config.monitor.device = obj.device;
-      state.config.monitor.deviceName = obj.deviceName;
-      state.config.monitor.connections = obj.connections;
+      state.monitor.version = configObj.version;
+      state.monitor.name = configObj.name;
+      state.monitor.sampleRate = durationParser(configObj.sampleRate);
+      state.monitor.device = state.monitor.device || configObj.device; // use command line or config device, else autoconfig
+      state.monitor.deviceName = configObj.deviceName;
+      state.connections = configObj.connections.map(conn => {
+        return {
+          connection_id: conn.connection_id,
+          interfaceUid: conn.interfaceUid,
+          kind: conn.kind,
+          // for now, just take first one.  Later, these represent choices!
+          dst: conn.dst[0],
+          src: conn.src[0],
+          port: conn.port[0]
+        };
+      });
+      // let config parameters provide override
 
       startMonitoring();
     }

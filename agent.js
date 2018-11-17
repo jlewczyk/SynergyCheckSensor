@@ -313,6 +313,25 @@ if (!fs.existsSync(distFolder)) {
 }
 app.use(express.static(distFolder));
 app.use(express.json());
+// Most api calls are only usable with a valid shared secret
+app.use(function(req, res, next) {
+  logger.info('authorization check here');
+  // look for api key in either header or parameter
+  if (req.headers.authorization) {
+    if (req.headers.authorization.toLowerCase().split(' ')[0] === 'bearer') {
+      if (req.headers.authorization.substr(7) === state.apiKey) {
+        // keep going
+        return next();
+      }
+    }
+  } else if (req.url === '/api/ping') {
+    // ping does not need to authorized
+    return next();
+  }
+
+  return next(); // TODO REMOVE WHEN Sensor/Swagger Auth in place
+  //return res.status(401).send(`unauthorized`);
+});
 
 // when state.port is finalized, can set up to server swagger
 //------------- swagger specification document -------------------

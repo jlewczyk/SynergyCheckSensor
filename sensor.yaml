@@ -1,7 +1,7 @@
 ---
 comment: using auto configuration to provide configuration of what to monitor in connections array
 sensor:
-  sensorId: 5bec6f6dae989600f891dc83
+  sensorId: 5bec19e8087d3020105b8890
   name: canary1
   created:
     when: 2018-11-14T20:05:17.393Z
@@ -14,6 +14,7 @@ agent:
   httpProtocol: http
   hostName: localhost
   port: 19999 # this agent listens on this port
+  apiBase: /api/v1/
   apiKeys:
   - 6ff8b366-36ea-429d-8ab5-6c21fff37485
   - 59671f72-c20c-48dc-b096-709123150cdb
