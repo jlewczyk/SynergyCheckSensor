@@ -116,7 +116,7 @@ const state = {
     sampleRate: 10000,
     version: '?', // supply from config or autoConfig
     name: '?', // supply from config or autoConfig
-    device: '', // supply by config or autoConfig
+    device: undefined, // supply by --device, or config.monitor.device or from autoConfig
     deviceName: '', // supply by config or autoConfig (documentation only)
     noReport: false // if true, suppress sending sensorReports
   },
@@ -311,12 +311,13 @@ if (commander.find !== undefined) {
 if (commander.filter !== undefined) {
   state.filter = commander.filter;
 }
+processConfigItem('monitor.device', 'device', 'monitor.device');
 if (commander.device !== undefined) {
   if (state.autoConfig) {
     logger.warning(`specified device on command when autoConfig, will override autoconfig with device "${commander.device}"`);
+  } else if (state.config.monitor.device) {
+    logger.warning(`specified device in config file, will override autoconfig with device "${state.config.monitor.device}"`);
   }
-  // the ethernet device to monitor
-  state.monitor.device = commander.device;
 }
 if (commander.content !== undefined) {
   // show packet content in log
