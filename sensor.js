@@ -523,7 +523,7 @@ function monitorConnection(conn) {
                 logger.info(`    content: ${content}`);
               }
             }
-            if (!dataLen) {
+            if (!datalen) {
               return; // filter out empty packets
             }
 
