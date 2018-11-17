@@ -260,19 +260,21 @@ try {
   state.customerId = state.config.synergyCheck.customerId;
 
   if (state.config.monitor) {
-    // validate state.config.monitor.sampleRate, it is ms report period
-    if (typeof(state.config.monitor.sampleRate) === 'string') {
-      // recognize '10m', etc.
-      state.config.monitor.sampleRate = parseDuration(state.config.monitor.sampleRate);
-    } else if (typeof(state.config.monitor.sampleRate) !== 'number') {
-      logger.error(`monitor.sampleRate is not a positive integer "${state.config.monitor.sampleRate}"`);
-      process.exit(1);
-    }
-    // assume ms
-    // validate sampleRate
-    if (state.config.monitor.sampleRate < 1000) {
-      logger.error(`cannot accept monitor.sampleRate < 1000 ms. You specified ${state.config.monitor.sampleRate}`);
-      process.exit(1);
+    if (typeof(state.config.monitor.sampleRate) !== 'undefined') {
+      // validate state.config.monitor.sampleRate, it is ms report period
+      if (typeof(state.config.monitor.sampleRate) === 'string') {
+        // recognize '10m', etc.
+        state.config.monitor.sampleRate = parseDuration(state.config.monitor.sampleRate);
+      } else if (typeof(state.config.monitor.sampleRate) !== 'number') {
+        logger.error(`monitor.sampleRate is not a positive integer "${state.config.monitor.sampleRate}"`);
+        process.exit(1);
+      }
+      // assume ms
+      // validate sampleRate
+      if (state.config.monitor.sampleRate < 1000) {
+        logger.error(`cannot accept monitor.sampleRate < 1000 ms. You specified ${state.config.monitor.sampleRate}`);
+        process.exit(1);
+      }
     }
 
     if (typeof(state.config.monitor.connections) !== 'undefined') {
