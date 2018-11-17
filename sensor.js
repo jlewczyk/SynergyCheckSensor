@@ -366,7 +366,7 @@ function report() {
       duration: '10s',
       connections: samples.map(s => {
         return {
-          interfaceUId: s.interfaceUid,
+          interfaceUid: s.interfaceUid,
           charCount: s.charCount,
           packetCount: s.packetCount,
           disconnected: s.disconnected,
