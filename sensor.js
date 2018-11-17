@@ -617,7 +617,7 @@ if (state.autoConfig) {
           // for now, just take first one.  Later, these represent choices!
           dst: conn.dst[0],
           src: conn.src[0],
-          port: conn.port[0]
+          port: conn.port
         };
       });
       // let config parameters provide override
