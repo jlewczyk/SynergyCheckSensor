@@ -267,7 +267,7 @@ function processReportingPeriod() {
   state.report.dur = `${Math.floor(state.report.period / 1000)}s`; // e.g. '60s'
 }
 
-processConfigItem('autoReport', 'autoReport', 'report.autoReport');
+processConfigItem('report.autoReport', 'autoReport', 'report.autoReport');
 if (typeof(state.report.autoReport) === 'string') {
   // configured from command line
   state.report.autoReport = (state.report.autoReport.toLowerCase === 'true' ? true : state.report.autoReport.toLowerCase() === 'false' ? false : undefined);
