@@ -597,7 +597,7 @@ function monitorThisConnection(conn) {
             }
 
             if (!state.debugMode && !state.verbose) {
-              logger.info(`    IPv4 TCP from ${ipv4.info.srcaddr}:${tcp.info.srcport} to ${ipv4.info.dstaddr}:${tcp.info.dstport} length=${datalen}`);
+              logger.info(`${new Date().toLocaleString()}    IPv4 TCP from ${ipv4.info.srcaddr}:${tcp.info.srcport} to ${ipv4.info.dstaddr}:${tcp.info.dstport} length=${datalen}`);
             }
             // by interfaceUid -> { charCount, packets, disconnected, lastMessageTimestamp }
             let sample = samplesIndex[conn.interfaceUid];

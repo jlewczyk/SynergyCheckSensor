@@ -80,6 +80,7 @@ let priorReport = false; // intiialize to false so recognize first time
 const state = {
   release: '0.0.1',
   autoConfig: false,
+  noauth: false, // default to requiring valid authorization token to be supplied on webapi calls
   commandLine: {}, // copy of arguments
   configFile: './agent.yaml',
   config: undefined, // set when config file read
@@ -287,7 +288,7 @@ if (typeof(state.report.autoReport) !== 'boolean') {
   errors.push(`expected report.autoReport to be boolean, it is ${typeof(state.report.autoReport)}`);
 }
 if (!state.report.autoReport) {
-  logger.warning(`Will NOT automatically send agentReports. You need to make web api all to start them`);
+  logger.warning(`Will NOT automatically send agentReports. You need to make web api call to start them`);
 }
 
 if (errors.length) {
@@ -333,7 +334,7 @@ app.use(function(req, res, next) {
         const apiKey = req.headers.authorization.substr(7);
         if (apiKey && state.synergyCheck.apiKeys.includes(req.headers.authorization.substr(7))) {
           // authorized, so on to the next middleware
-          logger.info('authorization check ok');
+          logger.debug('authorization check ok');
           return next();
         }
       }
