@@ -51,10 +51,18 @@ const logger = {
   success: function() {
     console.log.apply(null, Array.from(arguments).map(a => colors.green(a)));
   },
+  verbose: function() {
+    if (state.verbose || state.debugMode) {
+      console.log.apply(null, Array.from(arguments).map(a => colors.gray(a)));
+    }
+  },
   debug: function() {
-    console.log.apply(null, Array.from(arguments).map(a => colors.gray(a)));
+    if (state.debugMode) {
+      console.log.apply(null, Array.from(arguments).map(a => colors.gray(a)));
+    }
   }
 };
+logger.warn = logger.warning; // compatibility
 
 const app = express();
 
@@ -85,11 +93,13 @@ const state = {
 
   // for generating reports to SynergyCheck
   lastTransactionId: '',
+  noAuth: false, // disable check for apiKey in requests from agent/swagger
   synergyCheck: { // autoConfig or explcit in config file
     protocol: 'http',
     hostName: 'localHost',
     port: 8080,
-    apiBase: '/api/v1/'
+    apiBase: '/api/v1/',
+    apiKeys: [] // from config file
   },
   agent: {}, // autoConfig or explcit in config file
   swagger: {  // autoConfig or explcit in config file
@@ -126,6 +136,7 @@ const configKeys = [
     'protocol',
     'hostName',
     'port', // 1025 - 49151
+    'noAuth',
     'swagger.swaggerFile', // a yaml file
     'swagger.httpProtocol', // 'http' or 'https'
     'swagger.hostName', // ip4 address, or dns name
@@ -136,16 +147,19 @@ const configKeys = [
     'synergyCheck.port',
     'synergyCheck.apiBase', // for api calls to synergyCheck.com
     'synergyCheck.customerId', // string
+    'synergyCheck.apiKeys', // array of keys
     'report.period', // duration or mills
     'report.compress', // boolean
     'sensors' // array of Sensor objects
-    ];
+  ];
 // list of valid arguments in command line
 const commanderArgs = [
   'config',
+  'auto',
   'swagger',
-  'synergyCheck',
   'port',
+  'autoReport',
+  'noauth',
   'verbose',
   'debug'
 ];
@@ -157,6 +171,7 @@ commander
     .option(`-s, --swagger [value]`, `the swagger specification file, overrides "${state.swagger.swaggerFile}"`)
     .option(`-p, --port [value]`, `port the web server is listening on, override default of "${state.port}"`)
     .option(`-a, --autoReport [value]`, `automatically start agentReports true/false, overrides default of ${state.report.autoReport}`)
+    .option(`-n, --noauth`, `authorization apikey not required (not recommended for production`)
     .option(`-b, --verbose`, `output verbose messages for debugging`)
     .option(`-d, --debug`, `output debug messages for debugging`)
     .parse(process.argv);
@@ -179,12 +194,12 @@ commanderArgs.forEach((k) => {
 
 processConfigItem('autoConfig', 'auto');
 
+const errors = [];
 // Need to copy select set of properties in config.* to state.*
 if (state.autoConfig) {
   ['synergyCheck', 'agent', 'swagger'].forEach(name => {
     if (typeof(state.config[name]) !== 'object') {
-      logger.error(`for autoConfig, missing ${name} object in config file`);
-      process.exit(1);
+      errors.push(`for autoConfig, missing ${name} object in config file`);
     } else {
       Object.assign(state[name], state.config[name]);
     }
@@ -192,14 +207,14 @@ if (state.autoConfig) {
 } else {
   ['synergyCheck', 'agent', 'swagger', 'report', 'sensors'].forEach(name => {
     if (typeof(state.config[name]) !== 'object') {
-      logger.error(`for non-autoConfig, missing ${name} object in config file`);
-      process.exit(1);
+      errors.push(`for non-autoConfig, missing ${name} object in config file`);
     } else {
       Object.assign(state[name], state.config[name]);
     }
   });
 }
-const errors = [];
+processConfigItem('noauth', 'noauth', 'noauth');
+
 if (!state.synergyCheck.httpProtocol) {
   errors.push(`Missing state.synergyCheck.httpProtocol property`);
 }
@@ -212,9 +227,8 @@ if (!state.synergyCheck.port) {
 if (!state.synergyCheck.apiBase) {
   errors.push(`Missing state.synergyCheck.apiBase property`);
 }
-if (errors.length) {
-  errors.forEach(e => logger.error(e));
-  process.exit(1);
+if (!state.synergyCheck.apiKeys) {
+  errors.push(`Missing state.synergyCheck.apiKeys property`);
 }
 // Setup for communicating with SynergyCheck - ping, authenticate, autoConfig, post agentReports,...
 commonLib.setProtoHostPort(`${state.synergyCheck.httpProtocol || 'http'}://${state.synergyCheck.hostName}:${state.synergyCheck.port || 80}`);
@@ -222,12 +236,10 @@ commonLib.setProtoHostPort(`${state.synergyCheck.httpProtocol || 'http'}://${sta
 //------------ validate the properties in the state.agent -------------
 //------------------ validate state.agent.agentId ---------------------
 if (typeof(state.agent.agentId) === 'undefined') {
-  logger.error(`missing agent.agentId`);
-  process.exit(1);
+  errors.push(`missing agent.agentId`);
 }
 if (typeof(state.agent.agentId) === 'string' && state.agent.agentId.length === 0) {
-  logger.error(`agent.agentId in config file must be a non-empty string string`);
-  process.exit(1);
+  errors.push(`agent.agentId in config file must be a non-empty string string`);
 }
 
 //------------ validate the properties in the state.sensors -----------
@@ -244,24 +256,20 @@ if (state.autoConfig) {
     logger.info('state.report properties may be overriden when autoConfig is enabled. It will be auto configured');
   }
 } else {
-  processReportingPeriod();
+  processReportingPeriod(errors);
 }
-function processReportingPeriod() {
+function processReportingPeriod(errors) {
   if (typeof(state.report.period) === 'string') {
     state.report.period = durationParser(state.report.period);
     if (state.report.period <= 0) {
-      // todo - recognize '10m', etc.
-      logger.error(`report.period is not a positive integer "${config.report.period}"`);
-      process.exit(1);
+      errors.push(`report.period is not a positive integer "${config.report.period}"`);
     }
   }
   if (Number.isNaN(+state.report.period)) {
-    logger.error('cannot accept report.period is not a number');
-    process.exit(1);
+    errors.push('cannot accept report.period is not a number');
   }
   if (state.report.period < 1000) {
-    logger.error('cannot accept report.period < 1000 ms');
-    process.exit(1);
+    errors.push('cannot accept report.period < 1000 ms');
   }
   // This will be in the agentReport, which needs a string
   state.report.dur = `${Math.floor(state.report.period / 1000)}s`; // e.g. '60s'
@@ -272,21 +280,22 @@ if (typeof(state.report.autoReport) === 'string') {
   // configured from command line
   state.report.autoReport = (state.report.autoReport.toLowerCase === 'true' ? true : state.report.autoReport.toLowerCase() === 'false' ? false : undefined);
   if (state.report.autoReport == undefined) {
-    logger.error(`Expected autoReport to be true or false, but you specified ${state.report.autoReport}`);
-    process.exit(1);
+    errors.push(`Expected autoReport to be true or false, but you specified ${state.report.autoReport}`);
   }
 }
 if (typeof(state.report.autoReport) !== 'boolean') {
-  logger.error(`expected report.autoReport to be boolean, it is ${typeof(state.report.autoReport)}`);
-  process.exit(1);
+  errors.push(`expected report.autoReport to be boolean, it is ${typeof(state.report.autoReport)}`);
 }
 if (!state.report.autoReport) {
   logger.warning(`Will NOT automatically send agentReports. You need to make web api all to start them`);
 }
 
-if (state.verbose) {
-  logger.info(JSON.stringify(state, null, '  '));
+if (errors.length) {
+  errors.forEach(e => logger.error(e));
+  process.exit(1);
 }
+
+logger.verbose(JSON.stringify(state, null, '  '));
 
 processConfigItem('debug');
 
@@ -301,9 +310,7 @@ processConfigItem('port');
 state.port = process.env.PORT || state.port;
 state.protoHostPort = `${state.httpProtocol || 'http'}://${state.hostName}:${state.port || 80}`;
 
-if (state.verbose) {
-  logger.info(JSON.stringify(state, null, '  '));
-}
+logger.verbose(JSON.stringify(state, null, '  '));
 
 // Serve only the static files form the dist directory for any web site this hosts
 const distFolder = __dirname + '/dist';
@@ -315,22 +322,24 @@ app.use(express.static(distFolder));
 app.use(express.json());
 // Most api calls are only usable with a valid shared secret
 app.use(function(req, res, next) {
-  logger.info('authorization check here');
-  // look for api key in either header or parameter
-  if (req.headers.authorization) {
-    if (req.headers.authorization.toLowerCase().split(' ')[0] === 'bearer') {
-      if (req.headers.authorization.substr(7) === state.apiKey) {
-        // keep going
-        return next();
+  if (!state.noAuth) {
+    if (req.url === '/api/v1/ping') {
+      // ping does not require authorization
+      return next();
+    }
+    // look for api key in either header (or parameter?)
+    if (req.headers.authorization) {
+      if (req.headers.authorization.toLowerCase().split(' ')[0] === 'bearer') {
+        const apiKey = req.headers.authorization.substr(7);
+        if (apiKey && state.synergyCheck.apiKeys.includes(req.headers.authorization.substr(7))) {
+          // authorized, so on to the next middleware
+          logger.info('authorization check ok');
+          return next();
+        }
       }
     }
-  } else if (req.url === '/api/ping') {
-    // ping does not need to authorized
-    return next();
   }
-
-  return next(); // TODO REMOVE WHEN Sensor/Swagger Auth in place
-  //return res.status(401).send(`unauthorized`);
+  return res.status(401).send(`unauthorized`);
 });
 
 // when state.port is finalized, can set up to server swagger
@@ -352,9 +361,7 @@ try {
 
 } catch (ex2) {
   logger.error('Cannot load the swagger document ', state.swagger.swaggerFile);
-  if (state.verbose) {
-    logger.error(ex2.toString());
-  }
+  logger.error(ex2.toString());
   logger.error('exiting...');
   process.exit(1);
 }
@@ -412,7 +419,61 @@ function initializeSwagger(app, swaggerDoc) {
     }
   });
 }
+// Encapsulate fetch and configuration, so can detect fail and retry
+// @return a Promise that is fulfilled when config fetches and succesfully processed
+//   and rejected if cannot fetch (e.g. synergyCheck is unavailable) or invalid configuration returned
+function performAutoConfig() {
+  return new Promise((fulfill, reject) => {
+    if (state.debug || state.verbose) {
+      logger.verbose('autoConfig specified, so server not started until it received valid configuration');
+    }
+    state.autoConfigUrl = `${commonLib.getProtoHostPort()}${state.synergyCheck.apiBase}agent/${encodeURIComponent(state.agent.agentId)}/config`;
+    logger.verbose(`auto configuration call GET ${state.autoConfigUrl}`);
+    request({
+      method: 'GET',
+      uri: state.autoConfigUrl,
+      qs: {
+        customerId: state.synergyCheck.customerId
+      },
+      headers: {
+        'Authorization': `Bearer ${state.synergyCheck.jwt}`
+      },
+      json: true // parse body
+    }).then(configObj => {
+      if (state.debug || state.verbose) {
+        logger.verbose(`autoConfig data is ${JSON.stringify(configObj, null, '  ')}`);
+      }
+      const errors = [];
+      if (configObj.customer_id !== state.synergyCheck.customerId) {
+        errors.push(`expected customerId to be ${state.synergyCheck.customerId} but received ${configObj.customerId}`);
+      }
+      if (configObj.agent_id !== state.agent.agentId) {
+        errors.push(`expected agentId to be ${state.agent.agentId} but received ${configObj.agentid}`);
+      }
+      if (configObj.timestamp) {
+        // todo - is this newer than what we already have?  If not, can ignore it
+        // for use when agent polls server for most recent config so can auto update!
+      }
+      Object.assign(state.server, configObj.server || {});
+      Object.assign(state.report, configObj.report || {}); // todo - validate
+      processReportingPeriod(errors);
+      Object.assign(state.sensors, configObj.sensors || {}); // todo - validate
 
+      // todo - validate configuration data and incorporate
+      if (errors.length) {
+        logger.error(`Errors detected on incoming data from ${state.autoConfigUrl}`);
+        errors.forEach(e => { logger.error(e); });
+        reject(errors);
+      } else {
+        fulfill();
+      }
+    }).catch(err => {
+      logger.error(`error on GET ${state.autoConfigUrl}, err=${err}`);
+      // this could have err.statusCode === 401 for unauthorized
+      reject(err);
+    });
+  });
+}
 initializeSwagger(app, swaggerDocument).then(() => {
   logger.success(`Swagger initialized`);
   commonLib.getPing().then(() => {
@@ -421,85 +482,21 @@ initializeSwagger(app, swaggerDocument).then(() => {
       logger.success(`authenticated with synergyCheck server`);
 
       if (state.autoConfig) {
-        if (state.debug || state.verbose) {
-          logger.info('autoConfig specified, so server not started until it received valid configuration');
-        }
-        state.autoConfigUrl = `${commonLib.getProtoHostPort()}${state.synergyCheck.apiBase}agent/${encodeURIComponent(state.agent.agentId)}/config`;
-        request({
-          method: 'GET',
-          uri: state.autoConfigUrl,
-          qs: {
-            customerId: state.synergyCheck.customerId
-          },
-          headers: {
-            'Authorization': `Bearer ${state.synergyCheck.jwt}`
-          },
-          json: true // parse body
-        }).then(configObj => {
-          if (state.debug || state.verbose) {
-            logger.info(`autoConfig data is ${JSON.stringify(configObj, null, '  ')}`);
+        performAutoConfig().then(() => {
+          startListening();
+          if (state.report.autoReport) {
+            agentRoutes.startReporting();
           }
-          const errors = [];
-          if (configObj.customer_id !== state.synergyCheck.customerId) {
-            errors.push(`expected customerId to be ${state.synergyCheck.customerId} but received ${configObj.customerId}`);
-          }
-          if (configObj.agent_id !== state.agent.agentId) {
-            errors.push(`expected agentId to be ${state.agent.agentId} but received ${configObj.agentid}`);
-          }
-          if (configObj.timestamp) {
-            // todo - is this new than what we have?  If not, can ignore it
-            // for use when agent polls server for most recent config so can auto update!
-          }
-          Object.assign(state.server, configObj.server || {});
-          Object.assign(state.report, configObj.report || {}); // todo - validate
-          processReportingPeriod();
-          Object.assign(state.sensors, configObj.sensors || {}); // todo - validate
-
-          // todo - validate configuration data and incorporate
-          if (errors.length) {
-            logger.error(`Errors detected on incoming data from ${state.autoConfigUrl}`);
-            errors.forEach(e => { logger.error(e); });
-            process.exit(1);
-          } else {
-
-
-            startListening();
-            if (state.report.autoReport) {
-              agentRoutes.startReporting();
-            }
-
-          }
-        }).catch(err => {
-          logger.error(`error on GET ${state.autoConfigUrl}, err=${err}`);
-        });
-        if (state.verbose) {
-          logger.info(`auto configuration call GET ${state.autoConfigUrl}`);
-        }
-      } else {
-        logger.info('NOT auto configuring, using configuration as locally specified...')
-        initializeSwagger(app, swaggerDocument).then(() => {
-          commonLib.getPing().then(() => {
-            logger.success(`pinged synergyCheck server at ${commonLib.getProtoHostPort()}`);
-            commonLib.getAuthenticate().then(jwtToken => {
-              logger.success(`authenticated with synergyCheck server`);
-
-              startListening();
-              if (state.report.autoReport) {
-                agentRoutes.startReporting();
-              }
-
-            }, err => {
-              logger.error(`Failure to authenticate with server ${commonLib.getProtoHostPort()}`);
-              process.exit(1);
-            });
-          }, err => {
-            logger.error(`Fail to ping server ${commonLib.getProtoHostPort()}`);
-            process.exit(1);
-          })
         }, err => {
-          logger.error(`Error initializing Swagger ${err}`);
+          // todo - retry
           process.exit(1);
         });
+      } else {
+        logger.info('NOT auto configuring, using configuration as locally specified...')
+        startListening();
+        if (state.report.autoReport) {
+          agentRoutes.startReporting();
+        }
       }
     }, err => {
       logger.error(`Failure to authenticate with server ${commonLib.getProtoHostPort()}`);
@@ -513,7 +510,6 @@ initializeSwagger(app, swaggerDocument).then(() => {
   logger.error(`Error initializing Swagger ${err}`);
   process.exit(1);
 });
-
 
 function startListening() {
   app.listen(state.port);

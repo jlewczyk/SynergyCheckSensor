@@ -15,7 +15,7 @@ agent:
   hostName: localhost
   port: 19999 # this agent listens on this port
   apiBase: /api/v1/
-  apiKeys:
-  - 6ff8b366-36ea-429d-8ab5-6c21fff37485
-  - 59671f72-c20c-48dc-b096-709123150cdb
+  apiKeys: # for sensors to authenticate with
+  - fd3c36e1-fa93-438a-9f6e-5ef69427305a
+  - 7da420a0-22e8-446b-97a4-2cfc84d72989
 heartbeat: 30000

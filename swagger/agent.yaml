@@ -75,6 +75,10 @@ paths:
         schema:
           $ref: '#/definitions/SensorReport'
       responses:
+        '200':
+          description: successful report
+          schema:
+            $ref: '#/definitions/SensoReportResponse'
         '405':
           description: Invalid input
           schema:
@@ -261,6 +265,15 @@ definitions:
       lastMessageTimestamp: # not sure how useful this is - not being forwarded by Agent in agentReport
         type: string
         format: datetime
+  SensoReportResponse:
+    type: object
+    properties:
+      status:
+        type: string
+      errors:
+        type: array
+        items:
+          type: object
   Ping:
     type: object
     properties:
