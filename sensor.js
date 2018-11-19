@@ -424,12 +424,14 @@ function report() {
       }
     };
 
-    if (state.monitor.noReport) {
-      logger.warning(`noReport set, would have sent the following at ${new Date().toLocaleString()}...`);
-      logger.verbose(JSON.stringify(send, null, '  '));
-      fulfill({});
+    if (send.snapshot.connections.length) {
+      logger.verbose(`${send.snapshot.timestamp} ${state.monitor.noReport ? `noReport set NOT SENT ` : ''}${JSON.stringify(send, null, '  ')}`); // multiple lines
     } else {
-      logger.debug(JSON.stringify(send, null, '  '));
+      logger.verbose(`${send.snapshot.timestamp} ${state.monitor.noReport ? `noReport set NOT SENT ` : ''}${JSON.stringify(send)}`); // a single line
+    }
+
+    if (state.monitor.noReport) {
+      fulfill({});
     }
 
     samples.length = 0; // reset. Will accumulate for new sampling period
