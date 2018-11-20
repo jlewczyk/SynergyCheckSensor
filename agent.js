@@ -323,8 +323,9 @@ app.use(express.static(distFolder));
 app.use(express.json());
 // Most api calls are only usable with a valid shared secret
 app.use(function(req, res, next) {
+  // auth turned on (default) and accessing api endpoint...
   if (!state.noAuth) {
-    if (req.url === '/api/v1/ping') {
+    if (req.url.indexOf('/api/') !== 0 || req.url === '/api/v1/ping') {
       // ping does not require authorization
       return next();
     }

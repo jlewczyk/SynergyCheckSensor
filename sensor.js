@@ -269,7 +269,7 @@ try {
   // config MUST have sensor section with the registered id of the sensor
   // validate config.sensor
   if (typeof(state.config.sensor.sensorId) !== 'string') {
-    errors.push('missing string sensor.sensorId');
+    errors.push('missing required sensor.sensorId');
   }
   state.sensorId = state.config.sensor.sensorId;
 

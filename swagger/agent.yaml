@@ -24,6 +24,22 @@ tags:
     url: 'http://synergyCheck.com/info'
 schemes:
 - https #___PROTOCOL___
+securityDefinitions:
+  Bearer:
+    type: apiKey
+    name: Authorization
+    in: header
+    description: >
+      For accessing the API a valid JWT token must be passed in all the web api call (except ping)
+      in the 'Authorization' header.
+
+      The following syntax must be passed in the 'Authorization' header
+
+          Bearer yourApikey
+
+      The apiKey is provided as part of the sensor configuration
+security:
+- Bearer: []
 paths:
   /ping:
     get:
@@ -76,13 +92,13 @@ paths:
           $ref: '#/definitions/SensorReport'
       responses:
         '200':
-          description: successful report
+          description: Successful report
           schema:
             $ref: '#/definitions/SensoReportResponse'
         '405':
           description: Invalid input
           schema:
-            $ref: '#/definitions/ApiResponse'
+            $ref: '#/definitions/SensoReportResponse'
   /sensor/start:
     post:
       tags:
@@ -218,11 +234,6 @@ paths:
           description: successful operation
           schema:
             $ref: '#/definitions/ApiResponse'
-securityDefinitions:
-  api_key:
-    type: apiKey
-    name: api_key
-    in: header
 definitions:
   SensorReport: # what the sensor sends to the agent each reporting period
     type: object
@@ -274,6 +285,8 @@ definitions:
         type: array
         items:
           type: object
+      newConfig: # if true, then agent has a new configuration for the sensor to load
+        type: boolean
   Ping:
     type: object
     properties:
@@ -442,6 +455,9 @@ definitions:
         type: string
       deviceName: # external name of ethernet device being monitored
         type: string
+      locationId:
+        type: # where the sensor is located
+          string
       sampleRate: # how often to sample traffic - can be miilis or string '10s'
         type: string
       connections:
