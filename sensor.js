@@ -139,7 +139,7 @@ const state = {
     ran: 0,
     time: 0,
     avgTime: Number.NaN // not yet
-  ,
+  },
   connections: [], // config or autoConfig - what connections to monitor
   reportCounter: 0, // increments once at the begining of each reporting period
   checkForDisc: [], // of interfaceUid.  existingConnection[interfaceUid] = interface config (to get src,dst,port,kind
