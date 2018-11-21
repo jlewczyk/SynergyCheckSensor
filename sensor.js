@@ -122,7 +122,7 @@ function Connection(config) {
 }
 Connection.prototype.key = function() {
   return `${this.src[0]}|${this.dst[0]}|${this.port}`;
-}
+};
 const state = {
   release: '0.0.1', // todo
   configFile: 'sensor.yaml',
@@ -165,6 +165,7 @@ const state = {
     maxQuietToDisconnect: 0,
   },
   connections: [], // Connection objects assigned initially from config or autoConfig - what connections to monitor
+  disconnected: {}, // interfaceUid = undefined or false, or true if disconnected
   report: {
     counter: 0,
     retries: 0, // number of retry attempts to post sensorReport to agent
@@ -546,14 +547,20 @@ function checkForDisconnects(reptCounter) {
 
               if (established[conn.interfaceUid]) {
                 sample.disconnected = false;
+                state.disconnected[conn.interfaceUid] = false;
                 connects.push(conn.interfaceUid);
               } else {
+                // if this a change in disconnect status?
+                const wasDisc = state.disconnected[conn.interfaceUid];
                 logger.verbose(`netstat setting ${conn.interfaceUid} as disconnected`);
                 sample.disconnected = true;
+                state.disconnected[conn.interfaceUid] = true;
                 disconnects.push(conn.interfaceUid);
-                const howLong = now - state.quietToDisconnect[conn.interfaceUid];
-                state.netstat.minQuietToDisconnect = Math.min(state.netstat.minQuietToDisconnect, howLong);
-                state.netstat.maxQuietToDisconnect = Math.max(state.netstat.maxQuietToDisconnect, howLong);
+                if (!wasDisc) {
+                  const howLong = now - state.quietToDisconnect[conn.interfaceUid];
+                  state.netstat.minQuietToDisconnect = Math.min(state.netstat.minQuietToDisconnect, howLong);
+                  state.netstat.maxQuietToDisconnect = Math.max(state.netstat.maxQuietToDisconnect, howLong);
+                }
               }
             });
             try {
