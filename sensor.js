@@ -42,7 +42,7 @@ let monitored = {}; // key is `${src[0]}|${dst[0]}|${port}` -> { connection, cap
 let existingConnections = []; // what is currently being monitored Connection objects
 
 // this is re-initialized to empty object for each sample period
-const quietSince = {}; // by interfaceUid -> millis since last non-zero charcount detected
+const quietForHowLong = {}; // by interfaceUid -> millis since last non-zero charcount detected
 
 const samples = []; // connection data { charCount, packets, disconnected, lastMessageTimestamp }
 let samplesIndex = {}; // by interfaceUid -> connection data
@@ -416,20 +416,20 @@ function startMonitoring() {
       logger.debug(`${timestampISO} time to compile and send sensorReport`);
 
       // Examine for interfaces that have been quiet and track how long they have been quiet
-      // using quietSince[interfaceUid] = millis since last non-zero reading
+      // using quietForHowLong[interfaceUid] = millis since last non-zero reading
       // Therby maintaining candidates for disconnect check to state.checkForDisc
       existingConnections.forEach(conn => {
         const interfaceUid = conn.interfaceUid;
         const sample = samplesIndex[interfaceUid];
         // Keep track of how long since we last had characters measured on this interface
         if (!sample || !sample.charCount) {
-          if (!quietSince[interfaceUid]) { // undefined or 0
-            quietSince[interfaceUid] = state.monitor.sampleRate; // no charCount for last (sampleRate) millis
+          if (!quietForHowLong[interfaceUid]) { // undefined or 0
+            quietForHowLong[interfaceUid] = state.monitor.sampleRate; // no charCount for last (sampleRate) millis
           } else {
-            quietSince[interfaceUid] += state.monitor.sampleRate; // additional (sampleRate) seconds with no charCount
+            quietForHowLong[interfaceUid] += state.monitor.sampleRate; // additional (sampleRate) seconds with no charCount
           }
           // Has it been quiet long enough to include this interface for disconnect detection?
-          if (quietSince[interfaceUid] >= state.monitor.waitBeforeDiscCheck) {
+          if (quietForHowLong[interfaceUid] >= state.monitor.waitBeforeDiscCheck) {
             // add to list of those interfaces we should check if still working
             if (!state.checkForDisc.includes(interfaceUid)) {
               state.checkForDisc.push(interfaceUid);
@@ -441,7 +441,7 @@ function startMonitoring() {
           if (i > -1) {
             state.checkForDisc.splice(i, 1); // remove the entry
           }
-          quietSince[interfaceUid] = 0; // had a non-zero charCount this sampling period
+          quietForHowLong[interfaceUid] = 0; // had a non-zero charCount this sampling period
           state.quietToDisconnect[interfaceUid] = 0; // perhaps delete?
         }
       });
@@ -499,8 +499,10 @@ function checkForDisconnects(reptCounter) {
     // clear object that measures how long from zero detect to disconnect detect
     Object.keys(state.quietToDisconnect).forEach(uid => { delete state.quietToDisconnect[uid]; });
     const now = Date.now();
-    Object.keys(quietSince).forEach(uid => {
-      state.quietToDisconnect[uid] = now - quietSince[uid]; // roughly when first went quiet
+    Object.keys(quietForHowLong).forEach(uid => {
+      if (quietForHowLong[uid]) {
+        state.quietToDisconnect[uid] = now - quietForHowLong[uid]; // roughly when first went quiet
+      }
     });
 
     const candidates = existingConnections.filter(conn => state.checkForDisc.includes(conn.interfaceUid));
