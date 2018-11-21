@@ -280,6 +280,10 @@ definitions:
                 type: number
               minTime:
                 type: number
+              minQuietToDisconnect:
+                type: number
+              maxQuietToDisconnect:
+                type: number
           report:
             type: object
             properties:

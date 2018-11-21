@@ -43,6 +43,7 @@ let existingConnections = []; // what is currently being monitored Connection ob
 
 // this is re-initialized to empty object for each sample period
 const quietSince = {}; // by interfaceUid -> millis since last non-zero charcount detected
+
 const samples = []; // connection data { charCount, packets, disconnected, lastMessageTimestamp }
 let samplesIndex = {}; // by interfaceUid -> connection data
 
@@ -158,8 +159,10 @@ const state = {
     ran: 0, // # of times netstat was run
     time: 0, // total millis netstat ran (used to compute avgTime)
     avgTime: 0, // avg execution time for a netstat call
+    minTime: Number.MAX_SAFE_INTEGER,
     maxTime: -1,
-    minTime: Number.MAX_SAFE_INTEGER
+    minQuietToDisconnect: Number.MAX_SAFE_INTEGER,
+    maxQuietToDisconnect: 0,
   },
   connections: [], // Connection objects assigned initially from config or autoConfig - what connections to monitor
   report: {
@@ -168,6 +171,7 @@ const state = {
     rekeys: 0, // number of apiKey changes performed
     reconfig: 0 // number of reconfigurations performed
   }, // increments once at the begining of each reporting period
+  quietToDisconnect: {}, // by interfaceId -> millis from first detected 0 charCount until disconnect detected
   checkForDisc: [], // of interfaceUid.  existingConnection[interfaceUid] = interface config (to get src,dst,port,kind
   sendStats: false, // send statistics with each sensorReport if true
   verbose: false,
@@ -419,13 +423,13 @@ function startMonitoring() {
         const sample = samplesIndex[interfaceUid];
         // Keep track of how long since we last had characters measured on this interface
         if (!sample || !sample.charCount) {
-          if (typeof(quietSince[interfaceUid]) === 'undefined') {
+          if (!quietSince[interfaceUid]) { // undefined or 0
             quietSince[interfaceUid] = state.monitor.sampleRate; // no charCount for last (sampleRate) millis
           } else {
             quietSince[interfaceUid] += state.monitor.sampleRate; // additional (sampleRate) seconds with no charCount
           }
           // Has it been quiet long enough to include this interface for disconnect detection?
-          if (quietSince[interfaceUid] > state.monitor.waitBeforeDiscCheck) {
+          if (quietSince[interfaceUid] >= state.monitor.waitBeforeDiscCheck) {
             // add to list of those interfaces we should check if still working
             if (!state.checkForDisc.includes(interfaceUid)) {
               state.checkForDisc.push(interfaceUid);
@@ -438,6 +442,7 @@ function startMonitoring() {
             state.checkForDisc.splice(i, 1); // remove the entry
           }
           quietSince[interfaceUid] = 0; // had a non-zero charCount this sampling period
+          state.quietToDisconnect[interfaceUid] = 0; // perhaps delete?
         }
       });
       if (state.checkForDisc.length) {
@@ -464,7 +469,6 @@ function stopMonitoring() {
   reportTimer = null;
   logger.info(`stopped reporting`);
 }
-
 // An asynchronous operation to perform a netstat operation that checks for presence of
 // TCP/IP connection as defined in the existingConnections
 // @param is the value of state.report.counter when this check was initiated and is intended to show if the
@@ -491,6 +495,13 @@ function checkForDisconnects(reptCounter) {
       }
       return undefined;
     }
+
+    // clear object that measures how long from zero detect to disconnect detect
+    Object.keys(state.quietToDisconnect).forEach(uid => { delete state.quietToDisconnect[uid]; });
+    const now = Date.now();
+    Object.keys(quietSince).forEach(uid => {
+      state.quietToDisconnect[uid] = now - quietSince[uid]; // roughly when first went quiet
+    });
 
     const candidates = existingConnections.filter(conn => state.checkForDisc.includes(conn.interfaceUid));
     // can only use netstat is determine if connection is established for connections whose kind is TCP/IP
@@ -527,6 +538,7 @@ function checkForDisconnects(reptCounter) {
               state.netstat.performing = undefined;
               return reject(err);
             }
+            const now = Date.now();
             tcpipCandidates.forEach(conn => {
               sample = getSample(conn.interfaceUid);
 
@@ -537,6 +549,9 @@ function checkForDisconnects(reptCounter) {
                 logger.verbose(`netstat setting ${conn.interfaceUid} as disconnected`);
                 sample.disconnected = true;
                 disconnects.push(conn.interfaceUid);
+                const howLong = now - state.quietToDisconnect[conn.interfaceUid];
+                state.netstat.minQuietToDisconnect = Math.min(state.netstat.minQuietToDisconnect, howLong);
+                state.netstat.maxQuietToDisconnect = Math.max(state.netstat.maxQuietToDisconnect, howLong);
               }
             });
             try {
