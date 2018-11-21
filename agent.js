@@ -517,8 +517,8 @@ initializeSwagger(app, swaggerDocument).then(() => {
 
 function startListening() {
   app.listen(state.port);
-  logger.info(`Server listening on port ${state.port}`);
-  logger.info(`swagger api docs available at ${state.protoHostPort}/api-docs`);
+  logger.info(`Agent server listening on ${commonLib.getProtoHostPort()}`);
+  logger.info(`Agent openAPI docs available at ${commonLib.getProtoHostPort()}/api-docs`);
 }
 
 

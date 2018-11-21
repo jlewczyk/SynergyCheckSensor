@@ -34,9 +34,13 @@ const colors = require('colors');
 const bufSize = 10 * 1024 * 1024;
 const buffer = Buffer.alloc(65535);
 
-let monitored = {}; // key is `${src}|${dst}|${port}` -> { connection, cap }
+// holds onto the cap object, the connection specification that is active
+let monitored = {}; // key is `${src[0]}|${dst[0]}|${port}` -> { connection, cap }
 // note for a short time window, existingConnections may not equal state.monitor.connections
-let existingConnections = []; // what is currently being monitored
+
+// We keep the list of monitored interfaces (connection objects) here
+let existingConnections = []; // what is currently being monitored Connection objects
+
 // this is re-initialized to empty object for each sample period
 const quietSince = {}; // by interfaceUid -> millis since last non-zero charcount detected
 const samples = []; // connection data { charCount, packets, disconnected, lastMessageTimestamp }
@@ -104,6 +108,19 @@ const commanderArgs = [
   'debug'
 ];
 
+// This object defines one interface to be monitored
+function Connection(config) {
+  this.kind = config.kind;
+  this.measure = config.measure;
+  this.src = config.src; // array of ipaddr or hostnames [0] is current active
+  this.dst = config.dst; // array of ipaddr or hostnames [0] is current active
+  this.port = config.port; // common port for dst server they listen on
+  this.interfaceUid = config.interfaceUid; // external unique key for this interface
+  this.connection_id = config.connection_id; // document id of Connection definition
+}
+Connection.prototype.key = function() {
+  return `${this.src[0]}|${this.dst[0]}|${this.port}`;
+}
 const state = {
   release: '0.0.1', // todo
   configFile: 'sensor.yaml',
@@ -140,7 +157,7 @@ const state = {
     time: 0,
     avgTime: Number.NaN // not yet
   },
-  connections: [], // config or autoConfig - what connections to monitor
+  connections: [], // Connection objects assigned initially from config or autoConfig - what connections to monitor
   reportCounter: 0, // increments once at the begining of each reporting period
   checkForDisc: [], // of interfaceUid.  existingConnection[interfaceUid] = interface config (to get src,dst,port,kind
   verbose: false,
@@ -325,7 +342,7 @@ try {
         errors.push('missing config.monitor.connections array - nothing specified to monitor!');
       } else {
         // todo - validate array of connections
-        state.connections = state.config.connections;
+        state.connections = state.config.connections.map(conn => new Connection(conn));
       }
     } else {
       if (state.config.monitor.connections && state.config.monitor.connections.length) {
@@ -385,28 +402,30 @@ function startMonitoring() {
       // Examine for interfaces that have been quiet and track how long they have been quiet
       // using quietSince[interfaceUid] = millis since last non-zero reading
       // Therby maintaining candidates for disconnect check to state.checkForDisc
-      samples.forEach(s => {
+      existingConnections.forEach(conn => {
+        const interfaceUid = conn.interfaceUid;
+        const sample = samplesIndex[interfaceUid];
         // Keep track of how long since we last had characters measured on this interface
-        if (s.charCount === 0) {
-          if (typeof(quietSince[s.interfaceUid]) === 'undefined') {
-            quietSince[s.interfaceUid] = state.monitor.sampleRate; // no charCount for last (sampleRate) seconds
+        if (!sample || !sample.charCount) {
+          if (typeof(quietSince[interfaceUid]) === 'undefined') {
+            quietSince[interfaceUid] = state.monitor.sampleRate; // no charCount for last (sampleRate) millis
           } else {
-            quietSince[s.interfaceUid] += state.monitor.sampleRate; // additional (sampleRate) seconds with no charCount
+            quietSince[interfaceUid] += state.monitor.sampleRate; // additional (sampleRate) seconds with no charCount
           }
-          // Time to include this interface for disconnection using netstat
-          if (quietSince[s.interfaceUid] > state.monitor.waitBeforeDiscCheck) {
+          // Has it been quiet long enough to include this interface for disconnect detection?
+          if (quietSince[interfaceUid] > state.monitor.waitBeforeDiscCheck) {
             // add to list of those interfaces we should check if still working
-            if (!state.checkForDisc.includes(s.interfaceUid)) {
-              state.checkForDisc.push(s.interfaceUid);
+            if (!state.checkForDisc.includes(interfaceUid)) {
+              state.checkForDisc.push(interfaceUid);
             }
           }
         } else {
-          // We have measured some volume, so not a candidate for checking on disconnect
-          let i = state.checkForDisc.includes(s.interfaceUid);
+          // We have measured some volume, so interface is NOT a candidate for checking on disconnect
+          let i = state.checkForDisc.includes(interfaceUid);
           if (i > -1) {
             state.checkForDisc.splice(i, 1); // remove the entry
           }
-          quietSince[s.interfaceUid] = 0; // had a non-zero charCount this sampling period
+          quietSince[interfaceUid] = 0; // had a non-zero charCount this sampling period
         }
       });
       if (state.checkForDisc.length) {
@@ -452,10 +471,10 @@ function checkForDisconnects(reptCounter) {
       // while the connection's src is always the client side of the connection
       // If running the sensor on the server, match the connection destination to the local.address and local.port
       // If running the sensor on the client, match the connection destination to the remote.address and remote.port
-      if (conn.src === nsData.local.address && conn.dst === nsData.remote.address && conn.port === nsData.remote.port) {
+      if (conn.src[0] === nsData.local.address && conn.dst[0] === nsData.remote.address && conn.port === nsData.remote.port) {
         return conn;
       }
-      if (conn.src === nsData.remote.address && conn.dst === nsData.local.address && conn.port === nsData.local.port) {
+      if (conn.src[0] === nsData.remote.address && conn.dst[0] === nsData.local.address && conn.port === nsData.local.port) {
         return conn;
       }
       return undefined;
@@ -477,48 +496,50 @@ function checkForDisconnects(reptCounter) {
         logger.verbose(`netstat starting`);
         netstat({
           filter: {
-            protocol: 'tcp', sync: false, watch: false,
-            // Called when finished, maybe because of error
-            done: function (err) {
+            protocol: 'tcp'
+          },
+          sync: false,
+          watch: false,
+          // Called when finished, maybe because of error
+          done: function (err) {
 
-              const disconnects = []; // accumulate disconnects for potential check with pings
-              const connects = []; // accumulate established connections for stats
-              
-              // The setting of disconnected property in samples is performed here *synchronously*
-              // and affects the current reporting period, even though the netstat
-              // may have started in the prior (or earlier) reporting period, depending on how long it took to finish
-              logger.verbose(`netstat done, started @${reptCounter} finished @${state.reportCounter}, found ${Object.keys(established).length} established monitored connections out of ${tcpipCandidates.length} tcpip candidates`);
-              if (err) {
-                console.error(`netstat error occurred ${err}`);
-                state.netstat.performing = undefined;
-                return reject(err);
-              }
-              tcpipCandidates.forEach(conn => {
-                sample = getSample(conn.interfaceUid);
+            const disconnects = []; // accumulate disconnects for potential check with pings
+            const connects = []; // accumulate established connections for stats
 
-                if (established[conn.interfaceUid]) {
-                  sample.disconnected = false;
-                  connects.push(conn.interfaceUid);
-                } else {
-                  logger.verbose(`netstat setting ${conn.interfaceUid} as disconnected`);
-                  sample.disconnected = true;
-                  disconnects.push(conn.interfaceUid);
-                }
-              });
-              try {
-                state.netstat.time += Date.now() - state.netstat.performing;
-                state.netstat.ran++;
-                state.netstat.avgTime = Math.floor(state.netstat.time / state.netstat.ran);
-                state.disconnects += disconnects.length;
-                state.connects += connects.length;
-                logger.verbose(`netstat stats ${JSON.stringify(state.netstat)}`);
-              } catch (ex) {
-                logger.error(`netstat error updating netstat stats and computing avg time it takes to run ${err}`);
-              }
-
+            // The setting of disconnected property in samples is performed here *synchronously*
+            // and affects the current reporting period, even though the netstat
+            // may have started in the prior (or earlier) reporting period, depending on how long it took to finish
+            logger.verbose(`netstat done, started @${reptCounter} finished @${state.reportCounter}, found ${Object.keys(established).length} established monitored connections out of ${tcpipCandidates.length} tcpip candidates`);
+            if (err) {
+              console.error(`netstat error occurred ${err}`);
               state.netstat.performing = undefined;
-              fulfill();
+              return reject(err);
             }
+            tcpipCandidates.forEach(conn => {
+              sample = getSample(conn.interfaceUid);
+
+              if (established[conn.interfaceUid]) {
+                sample.disconnected = false;
+                connects.push(conn.interfaceUid);
+              } else {
+                logger.verbose(`netstat setting ${conn.interfaceUid} as disconnected`);
+                sample.disconnected = true;
+                disconnects.push(conn.interfaceUid);
+              }
+            });
+            try {
+              state.netstat.time += Date.now() - state.netstat.performing;
+              state.netstat.ran++;
+              state.netstat.avgTime = Math.floor(state.netstat.time / state.netstat.ran);
+              state.netstat.disconnects += disconnects.length;
+              state.netstat.connects += connects.length;
+              logger.verbose(`netstat stats ${JSON.stringify(state.netstat)}`);
+            } catch (ex) {
+              logger.error(`netstat error updating netstat stats and computing avg time it takes to run ${err}`);
+            }
+
+            state.netstat.performing = undefined;
+            fulfill();
           }
         }, function (data) { // called for each connection
           logger.debug(`netstat data ${JSON.stringify(data)}`);
@@ -537,6 +558,7 @@ function checkForDisconnects(reptCounter) {
     }
   });
 }
+//
 state.postReportUrl = `${commonLib.getProtoHostPort()}${state.config.agent.apiBase}sensor/report`;
 logger.info(`Sensor reports to url: ${state.postReportUrl}`);
 
@@ -641,27 +663,25 @@ function report() {
 // using the index of monitored caps (connections) (which is empty if first time)
 function resetMonitoring(oldConnections, newConnections) {
   let newOnes = newConnections.filter(conn => {
-    return !monitored[`${conn.src}|${conn.dst}|${conn.port}`];
+    return !monitored[conn.key()];
   });
   logger.debug(`newOnes: ${JSON.stringify(newOnes, null, '  ')}`);
   let existingOnes = newConnections.filter(conn => {
-    return monitored[`${conn.src}|${conn.dst}|${conn.port}`];
+    return monitored[conn.key()];
   });
   logger.debug(`existingOnes: ${JSON.stringify(existingOnes, null, '  ')}`);
   let removeThese = oldConnections.filter(oc => {
-    return !newConnections.find(nc => {
-      return nc.src === oc.src && nc.dst === oc.dst && nc.port === oc.port;
-    })
+    return !newConnections.find(nc => nc.key() === oc.key());
   });
   logger.debug(`removeThese: ${JSON.stringify(removeThese, null, '  ')}`);
   // if existing connections monitored and they are NOT in the new set of connections
   // then close them.
   removeThese.forEach(oc => {
-    let monitored =  monitored[`${oc.src}|${oc.dst}|${oc.port}`];
+    let monitored =  monitored[oc.key()];
     if (monitored) {
       monitored.cap.close();
     } else {
-      throw `expected to find monitored: ${oc.src}|${oc.dst}|${oc.port}`;
+      throw `expected to find monitored: ${oc.key()}`;
     }
   });
   newOnes.forEach(conn => {
@@ -680,23 +700,23 @@ function monitorThisConnection(conn) {
   const cap = new Cap(); // a new instance of Cap for each connection?  Else filter must be enlarged
 
   // remember so can close if updated configuration obtained
-  monitored[`${conn.src}|${conn.dst}|${conn.port}`] = {
+  monitored[conn.key()] = {
     connection: conn,
     cap: cap
   };
 
-  const filter = `tcp and src host ${conn.src} and dst host ${conn.dst} and dst port ${conn.port}`;
-  logger.info(`${conn.interfaceUid} monitored on ethernet device ${state.monitor.device} filter '${filter}'`);
+  const filter = `tcp and src host ${conn.src[0]} and dst host ${conn.dst[0]} and dst port ${conn.port}`;
   let linkType;
   try {
     linkType = cap.open(state.monitor.device, filter, bufSize, buffer);
   } catch (ex) {
-    console.error(`Error opening defined ${state.monitor.device}, ${ex}`);
-    console.error(`for ${conn.src}|${conn.dst}|${conn.port}`);
+    logger.info(`${conn.interfaceUid} monitored on ethernet device ${state.monitor.device} filter '${filter}'`);
+    logger.error(`Error opening defined ${state.monitor.device}, ${ex}`);
+    logger.error(`for ${conn.key()}`);
     process.exit(1);
     return;
   }
-  logger.info(`${conn.interfaceUid} -> linkType=${linkType}`);
+  logger.info(`${conn.interfaceUid} monitored on ethernet device ${state.monitor.device} filter '${filter}' -> linkType=${linkType}`);
 
   cap.setMinBytes && cap.setMinBytes(0); // windows only todo
 
@@ -718,12 +738,12 @@ function monitorThisConnection(conn) {
         logger.debug(`    IPv4 info - from: ${ipv4.info.srcaddr} to ${ipv4.info.dstaddr}`);
 
         // verify filter works!
-        if (conn.src !== ipv4.info.srcaddr) {
-          error = `${conn.interfaceUid} expecting src to be ${conn.src} but it is ${ipv4.info.srcaddr}`;
+        if (conn.src[0] !== ipv4.info.srcaddr) {
+          error = `${conn.interfaceUid} expecting src to be ${conn.src[0]} but it is ${ipv4.info.srcaddr}`;
           errors.push(error);
         }
-        if (conn.dst !== ipv4.info.dstaddr) {
-          error = `${conn.interfaceUid} expecting src to be ${conn.dst} but it is ${ipv4.info.dstaddr}`;
+        if (conn.dst[0] !== ipv4.info.dstaddr) {
+          error = `${conn.interfaceUid} expecting src to be ${conn.dst[0]} but it is ${ipv4.info.dstaddr}`;
           errors.push(error);
         }
 
@@ -786,15 +806,15 @@ function monitorThisConnection(conn) {
 }
 // return existing, or make new entry for specified interfaceUid
 function getSample(interfaceUid) {
-  let sample = samplesIndex[conn.interfaceUid];
+  let sample = samplesIndex[interfaceUid];
   if (!sample) {
     sample = {
-      interfaceUid: conn.interfaceUid,
+      interfaceUid: interfaceUid,
       charCount: 0,
       packetCount: 0,
       disconnected: false
     };
-    samplesIndex[conn.interfaceUid] = sample;
+    samplesIndex[interfaceUid] = sample;
     samples.push(sample); // convenience array
   }
   return sample;
@@ -867,21 +887,21 @@ function performAutoConfiguration() {
       if (errors.length === 0) {
         state.monitor.version = configObj.version;
         state.monitor.name = configObj.name;
-        state.monitor.sampleRate = durationParser(configObj.sampleRate);
+        state.monitor.sampleRate = configObj.sampleRate ? durationParser(configObj.sampleRate) : state.monitor.sampleRate;
         state.monitor.device = state.monitor.device || configObj.device; // use command line or config device, else autoconfig
-        state.monitor.deviceName = configObj.deviceName;
-        state.connections = (configObj.connections || []).map(conn => {
-          return {
-            connection_id: conn.connection_id,
-            interfaceUid: conn.interfaceUid,
-            kind: conn.kind,
-            // for now, just take first one.  Later, these represent choices!
-            // todo - array of ports corresponding to array of dst and src for auto re-routing with high availability setup
-            dst: conn.dst[0],
-            src: conn.src[0],
-            port: conn.port
-          };
-        });
+        state.monitor.deviceName = configObj.deviceName; // documentation only
+        state.connections = (configObj.connections || []).map(conn => new Connection(conn))
+        //   return {
+        //     connection_id: conn.connection_id,
+        //     interfaceUid: conn.interfaceUid,
+        //     kind: conn.kind,
+        //     // for now, just take first one.  Later, these represent choices!
+        //     // todo - array of ports corresponding to array of dst and src for auto re-routing with high availability setup
+        //     dst: conn.dst,
+        //     src: conn.src,
+        //     port: conn.port
+        //   };
+        // });
 
         fulfill();
 
