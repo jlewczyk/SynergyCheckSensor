@@ -161,6 +161,7 @@ const commanderArgs = [
   'port',
   'autoReport',
   'noauth',
+  'weakSSL',
   'verbose',
   'debug'
 ];
@@ -173,7 +174,7 @@ commander
     .option(`-p, --port [value]`, `port the web server is listening on, override default of "${state.port}"`)
     .option(`-a, --autoReport [value]`, `automatically start agentReports true/false, overrides default of ${state.report.autoReport}`)
     .option(`-n, --noauth`, `authorization apikey not required (not recommended for production`)
-    .option(`-b, --verbose`, `output verbose messages for debugging`)
+    .option('-w, --weakSSL', 'The tls certificate need not be valid, overrides ' + state.weakSSL + '"')    .option(`-b, --verbose`, `output verbose messages for debugging`)
     .option(`-d, --debug`, `output debug messages for debugging`)
     .parse(process.argv);
 
@@ -215,6 +216,7 @@ if (state.autoConfig) {
   });
 }
 processConfigItem('noauth', 'noauth', 'noauth');
+processConfigItem('weakSSL', 'weakSSL', 'weakSSL');
 
 if (!state.synergyCheck.httpProtocol) {
   errors.push(`Missing state.synergyCheck.httpProtocol property`);

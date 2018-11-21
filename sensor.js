@@ -23,6 +23,7 @@ const commander = require('commander');
 const os = require('os');
 const fs = require('fs');
 const Cap = require('cap').Cap;
+const netstat = require('node-netstat');
 const decoders = require('cap').decoders;
 const PROTOCOL = decoders.PROTOCOL;
 const request = require('request-promise-native');
@@ -37,6 +38,7 @@ let monitored = {}; // key is `${src}|${dst}|${port}` -> { connection, cap }
 // note for a short time window, existingConnections may not equal state.monitor.connections
 let existingConnections = []; // what is currently being monitored
 // this is re-initialized to empty object for each sample period
+const quietSince = {}; // by interfaceUid -> millis since last non-zero charcount detected
 const samples = []; // connection data { charCount, packets, disconnected, lastMessageTimestamp }
 let samplesIndex = {}; // by interfaceUid -> connection data
 
@@ -127,9 +129,20 @@ const state = {
     device: undefined, // supply by --device, or config.monitor.device or from autoConfig
     deviceName: '', // supply by config or autoConfig (documentation only)
     content: false,
+    waitBeforeDiscCheck: 20000, // wait for 20 secs or more of zer0 before performing netstat on the connection
     noReport: false // if true, suppress sending sensorReports
   },
+  netstat: {
+    performing: undefined, // Date.now() when started, and means it is running
+    disconnects: 0, // count of disconnects detected
+    connects: 0, // count of connects detected
+    ran: 0,
+    time: 0,
+    avgTime: Number.NaN // not yet
+  ,
   connections: [], // config or autoConfig - what connections to monitor
+  reportCounter: 0, // increments once at the begining of each reporting period
+  checkForDisc: [], // of interfaceUid.  existingConnection[interfaceUid] = interface config (to get src,dst,port,kind
   verbose: false,
   debug: false
 };
@@ -358,6 +371,7 @@ function startMonitoring() {
 
     // initiate reporting
     reportTimer = setInterval(function () {
+      state.reportCounter++;
       // if agent has not responded yet to prior report, continue accumulating
       // and don't generate a report (which resets accumulator)
 
@@ -366,7 +380,42 @@ function startMonitoring() {
       }
       state.agentReportInProgress = new Date();
       const timestampISO = state.agentReportInProgress.toISOString();
-      logger.debug(`${timestampISO} time to send sensorReport`);
+      logger.debug(`${timestampISO} time to compile and send sensorReport`);
+
+      // Examine for interfaces that have been quiet and track how long they have been quiet
+      // using quietSince[interfaceUid] = millis since last non-zero reading
+      // Therby maintaining candidates for disconnect check to state.checkForDisc
+      samples.forEach(s => {
+        // Keep track of how long since we last had characters measured on this interface
+        if (s.charCount === 0) {
+          if (typeof(quietSince[s.interfaceUid]) === 'undefined') {
+            quietSince[s.interfaceUid] = state.monitor.sampleRate; // no charCount for last (sampleRate) seconds
+          } else {
+            quietSince[s.interfaceUid] += state.monitor.sampleRate; // additional (sampleRate) seconds with no charCount
+          }
+          // Time to include this interface for disconnection using netstat
+          if (quietSince[s.interfaceUid] > state.monitor.waitBeforeDiscCheck) {
+            // add to list of those interfaces we should check if still working
+            if (!state.checkForDisc.includes(s.interfaceUid)) {
+              state.checkForDisc.push(s.interfaceUid);
+            }
+          }
+        } else {
+          // We have measured some volume, so not a candidate for checking on disconnect
+          let i = state.checkForDisc.includes(s.interfaceUid);
+          if (i > -1) {
+            state.checkForDisc.splice(i, 1); // remove the entry
+          }
+          quietSince[s.interfaceUid] = 0; // had a non-zero charCount this sampling period
+        }
+      });
+      if (state.checkForDisc.length) {
+        checkForDisconnects(state.reportCounter).then(() => {
+          // nothing todo
+        }, err => {
+          // nothing todo
+        });
+      }
       report().then(result => {
         state.agentReportInProgress = null;
         if (result.newConfig) {
@@ -385,6 +434,109 @@ function stopMonitoring() {
   logger.info(`stopped reporting`);
 }
 
+// An asynchronous operation to perform a netstat operation that checks for presence of
+// TCP/IP connection as defined in the existingConnections
+// @param is the value of state.reportCounter when this check was initiated and is intended to show if the
+// time to perform netstate (and maybe other) checks is longer than the reporting period
+function checkForDisconnects(reptCounter) {
+
+  return new Promise((fulfill, reject) => {
+
+    // @param conn is a connection specification from sensor configuration.  Has kind, src, dst, port
+    // @param nsData one result from netstat, has local:{port,address},remote:{port,address},state,pid
+    function isMatch(conn, nsData) {
+      // netstat returns data in relation to the machine that the sensor is running on
+      // So this works to detect the estistance of a connection if run on one of the two machines
+      // involved with a connection: either as client or server side.
+      // The connection's dst and port is always the server side of the connection
+      // while the connection's src is always the client side of the connection
+      // If running the sensor on the server, match the connection destination to the local.address and local.port
+      // If running the sensor on the client, match the connection destination to the remote.address and remote.port
+      if (conn.src === nsData.local.address && conn.dst === nsData.remote.address && conn.port === nsData.remote.port) {
+        return conn;
+      }
+      if (conn.src === nsData.remote.address && conn.dst === nsData.local.address && conn.port === nsData.local.port) {
+        return conn;
+      }
+      return undefined;
+    }
+
+    const candidates = existingConnections.filter(conn => state.checkForDisc.includes(conn.interfaceUid));
+    // can only use netstat is determine if connection is established for connections whose kind is TCP/IP
+    const tcpipCandidates = candidates.filter(conn => conn.kind === 'TCP/IP');
+
+    // Track which connections that we are monitoring have been detected as ESTABLISHED by netstat
+    const established = {}; // interfaceUid = true if 'ESTABLISHED' detected
+    //
+    logger.verbose(`netstat candidates with 0 charCount: ${candidates.map(cn => cn.interfaceUid)}`);
+    logger.verbose(`netstat tcpipCandidates with 0 charCount: ${tcpipCandidates.map(cn => cn.interfaceUid)}`);
+    // can use netstat to look for matching connections
+    if (tcpipCandidates.length) {
+      if (!state.netstat.performing) {
+        state.netstat.performing = Date.now();
+        logger.verbose(`netstat starting`);
+        netstat({
+          filter: {
+            protocol: 'tcp', sync: false, watch: false,
+            // Called when finished, maybe because of error
+            done: function (err) {
+
+              const disconnects = []; // accumulate disconnects for potential check with pings
+              const connects = []; // accumulate established connections for stats
+              
+              // The setting of disconnected property in samples is performed here *synchronously*
+              // and affects the current reporting period, even though the netstat
+              // may have started in the prior (or earlier) reporting period, depending on how long it took to finish
+              logger.verbose(`netstat done, started @${reptCounter} finished @${state.reportCounter}, found ${Object.keys(established).length} established monitored connections out of ${tcpipCandidates.length} tcpip candidates`);
+              if (err) {
+                console.error(`netstat error occurred ${err}`);
+                state.netstat.performing = undefined;
+                return reject(err);
+              }
+              tcpipCandidates.forEach(conn => {
+                sample = getSample(conn.interfaceUid);
+
+                if (established[conn.interfaceUid]) {
+                  sample.disconnected = false;
+                  connects.push(conn.interfaceUid);
+                } else {
+                  logger.verbose(`netstat setting ${conn.interfaceUid} as disconnected`);
+                  sample.disconnected = true;
+                  disconnects.push(conn.interfaceUid);
+                }
+              });
+              try {
+                state.netstat.time += Date.now() - state.netstat.performing;
+                state.netstat.ran++;
+                state.netstat.avgTime = Math.floor(state.netstat.time / state.netstat.ran);
+                state.disconnects += disconnects.length;
+                state.connects += connects.length;
+                logger.verbose(`netstat stats ${JSON.stringify(state.netstat)}`);
+              } catch (ex) {
+                logger.error(`netstat error updating netstat stats and computing avg time it takes to run ${err}`);
+              }
+
+              state.netstat.performing = undefined;
+              fulfill();
+            }
+          }
+        }, function (data) { // called for each connection
+          logger.debug(`netstat data ${JSON.stringify(data)}`);
+          const connection = tcpipCandidates.find(conn => isMatch(conn, data));
+          if (connection) {
+            if (data.state === 'ESTABLISHED') {
+              established[connection.interfaceUid] = true;
+            }
+          }
+        });
+      } else {
+        logger.warning(`netstat Calling netstat when it is already running for ${Date.now() - state.netstat.performing} millis, skipping this report period`);
+      }
+    } else {
+      logger.verbose(`netstat There are NO tcpipCandidates for disconnect probing`);
+    }
+  });
+}
 state.postReportUrl = `${commonLib.getProtoHostPort()}${state.config.agent.apiBase}sensor/report`;
 logger.info(`Sensor reports to url: ${state.postReportUrl}`);
 
@@ -425,9 +577,9 @@ function report() {
     };
 
     if (send.snapshot.connections.length) {
-      logger.verbose(`${send.snapshot.timestamp} ${state.monitor.noReport ? `noReport set NOT SENT ` : ''}${JSON.stringify(send, null, '  ')}`); // multiple lines
+      logger.verbose(`${send.snapshot.timestamp} ${state.monitor.noReport ? `noReport is set so, NOT SENT ` : ''}${JSON.stringify(send, null, '  ')}`); // multiple lines
     } else {
-      logger.verbose(`${send.snapshot.timestamp} ${state.monitor.noReport ? `noReport set NOT SENT ` : ''}${JSON.stringify(send)}`); // a single line
+      logger.verbose(`${send.snapshot.timestamp} ${state.monitor.noReport ? `noReport is set so, NOT SENT ` : ''}${JSON.stringify(send)}`); // a single line
     }
 
     if (state.monitor.noReport) {
@@ -437,48 +589,47 @@ function report() {
     samples.length = 0; // reset. Will accumulate for new sampling period
     samplesIndex = {};
 
-    if (!state.monitor.noReport) {
-      function makeSensorReportRequest() {
-        request({
-          method: 'POST',
-          uri: state.postReportUrl,
-          body: send,
-          json: true, // automatically stringifies body
-          headers: {
-            'Authorization': `Bearer ${state.agent.apiKeys[0]}`
-          }
-        }).then(response => {
-          logger.verbose(JSON.stringify(response));
-          // response is ok, optional new config available indicator
-          fulfill(response);
-        }).catch(err => {
-          logger.error(err);
-          if (err.statusCode === 401) {
-            // retry with new apiKey if any left to try, else exit
-            const badKey = state.agent.apiKeys.shift();
-            if (state.agent.apiKeys.length) {
-              // todo - disgard the key, if it expired
-              // state.agent.apiKeys.push(badKey);
-              setTimeout(() => {
-                makeSensorReportRequest();
-              }, state.retryPeriod || 3000);
-            } else {
-              logger.error(`all apiKeys are rejected, quitting after unsuccesful send of sensorReport:`);
-              logger.error(JSON.stringify(send, null, '  '));
-              reject('no acceptable api keys available');
-            }
-          } else {
-            // not an unauthorized rejection.  Keep trying
+    function makeSensorReportRequest() {
+      request({
+        method: 'POST',
+        uri: state.postReportUrl,
+        body: send,
+        json: true, // automatically stringifies body
+        headers: {
+          'Authorization': `Bearer ${state.agent.apiKeys[0]}`
+        }
+      }).then(response => {
+        logger.verbose(JSON.stringify(response));
+        // response is ok, optional new config available indicator
+        fulfill(response);
+      }).catch(err => {
+        logger.error(err);
+        if (err.statusCode === 401) {
+          // retry with new apiKey if any left to try, else exit
+          const badKey = state.agent.apiKeys.shift();
+          if (state.agent.apiKeys.length) {
+            // todo - disgard the key, if it expired
+            // state.agent.apiKeys.push(badKey);
             setTimeout(() => {
-              // Is there a limit to the retries?
-              // What to do if abandon the request and reject?
               makeSensorReportRequest();
             }, state.retryPeriod || 3000);
+          } else {
+            logger.error(`all apiKeys are rejected, quitting after unsuccesful send of sensorReport:`);
+            logger.error(JSON.stringify(send, null, '  '));
+            reject('no acceptable api keys available');
           }
-        });
-      }
-      makeSensorReportRequest();
+        } else {
+          // not an unauthorized rejection.  Keep trying
+          setTimeout(() => {
+            // Is there a limit to the retries?
+            // What to do if abandon the request and reject?
+            makeSensorReportRequest();
+          }, state.retryPeriod || 3000);
+        }
+      });
     }
+    makeSensorReportRequest();
+
   });
 }
 // If autoConfig, then sensor will request configuration every state.refresh millis
@@ -553,6 +704,7 @@ function monitorThisConnection(conn) {
     logger.verbose(`${conn.interfaceUid} -> ${new Date().toLocaleString()} packet: length ${nbytes} bytes, truncated? ${trunc ? 'yes' : 'no'}`);
 
     let error;
+    let sample;
     const errors = [];
     // raw packet data === buffer.slice(0, nbytes)
 
@@ -602,17 +754,7 @@ function monitorThisConnection(conn) {
               logger.info(`${new Date().toLocaleString()}    IPv4 TCP from ${ipv4.info.srcaddr}:${tcp.info.srcport} to ${ipv4.info.dstaddr}:${tcp.info.dstport} length=${datalen}`);
             }
             // by interfaceUid -> { charCount, packets, disconnected, lastMessageTimestamp }
-            let sample = samplesIndex[conn.interfaceUid];
-            if (!sample) {
-              sample = {
-                interfaceUid: conn.interfaceUid,
-                charCount: 0,
-                packetCount: 0,
-                disconnected: false
-              };
-              samplesIndex[conn.interfaceUid] = sample;
-              samples.push(sample); // convenience array
-            }
+            sample = getSample(conn.interfaceUid);
             sample.charCount += datalen;
             sample.packetCount++;
             sample.lastMessageTimestamp = new Date().toISOString();
@@ -642,7 +784,21 @@ function monitorThisConnection(conn) {
     }
   });
 }
-
+// return existing, or make new entry for specified interfaceUid
+function getSample(interfaceUid) {
+  let sample = samplesIndex[conn.interfaceUid];
+  if (!sample) {
+    sample = {
+      interfaceUid: conn.interfaceUid,
+      charCount: 0,
+      packetCount: 0,
+      disconnected: false
+    };
+    samplesIndex[conn.interfaceUid] = sample;
+    samples.push(sample); // convenience array
+  }
+  return sample;
+}
 // Initial contact with agent is via the unauthenticated ping call
 // Continue to ping until agent answers, waiting state.pingPeriod millis
 // @return promise fulfilled when ping successful
