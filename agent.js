@@ -86,6 +86,7 @@ const state = {
   config: undefined, // set when config file read
   startedMills: startedMills,
   autoConfigUrl: undefined, // set when autoConfig executed
+  recentConfig : {}, // timestamp and version of most recent autoConfig
 
   // agent is a server, this specified how and where it is listening
   httpProtocol: 'http', // protocol (to inform swagger)
@@ -114,6 +115,7 @@ const state = {
     compress: true // true means leave out configured interfaces that have not reported
   }, // autoConfig or explicit in config file
   sensors: [], // autoConfig or explicit in config file
+  sensorStats: {}, // by sensorId
   started: started.toISOString(),
   sensorsAccum: [], // list of sensors supplying data accumulated for next report to synergyCheck
   connectionsAccum: [], // list of connections reported by sensors accumulated for current report period
@@ -458,6 +460,15 @@ function performAutoConfig() {
         // todo - is this newer than what we already have?  If not, can ignore it
         // for use when agent polls server for most recent config so can auto update!
       }
+      state.recentConfig = {
+        timestamp: configObj.timestamp,
+        sensors: (configObj.sensors || []).map(sens => {
+          return {
+            version: sens.version,
+            timestamp: sens.timestamp
+          }
+        })
+      };
       Object.assign(state.server, configObj.server || {});
       Object.assign(state.report, configObj.report || {}); // todo - validate
       processReportingPeriod(errors);

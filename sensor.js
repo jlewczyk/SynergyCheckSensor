@@ -104,6 +104,7 @@ const commanderArgs = [
   'content',
   'noReport',
   'release',
+  'sendStats',
   'verbose',
   'debug'
 ];
@@ -153,13 +154,22 @@ const state = {
     performing: undefined, // Date.now() when started, and means it is running
     disconnects: 0, // count of disconnects detected
     connects: 0, // count of connects detected
-    ran: 0,
-    time: 0,
-    avgTime: Number.NaN // not yet
+    inReport: 0, // count of times monitored interface was included in the netstat report (0 means not running in a place that can see those interfaces)
+    ran: 0, // # of times netstat was run
+    time: 0, // total millis netstat ran (used to compute avgTime)
+    avgTime: 0, // avg execution time for a netstat call
+    maxTime: -1,
+    minTime: Number.MAX_SAFE_INTEGER
   },
   connections: [], // Connection objects assigned initially from config or autoConfig - what connections to monitor
-  reportCounter: 0, // increments once at the begining of each reporting period
+  report: {
+    counter: 0,
+    retries: 0, // number of retry attempts to post sensorReport to agent
+    rekeys: 0, // number of apiKey changes performed
+    reconfig: 0 // number of reconfigurations performed
+  }, // increments once at the begining of each reporting period
   checkForDisc: [], // of interfaceUid.  existingConnection[interfaceUid] = interface config (to get src,dst,port,kind
+  sendStats: false, // send statistics with each sensorReport if true
   verbose: false,
   debug: false
 };
@@ -180,6 +190,7 @@ commander
     .option('-b, --content', `output packet message content for debugging, overrides "${state.monitor.content}"`)
     .option('-n, --noReport', `do not send sensorReports to agent (for local debugging)`)
     .option('-r, --release [value]', `The release of the server software , overrides "${state.release}"`)
+    .option('-s, --sendStats', 'send stats object as part of sensorReport (for agent to expose')
     .option('-b, --verbose', `output verbose messages for debugging, overrides "${state.verbose}"`)
     .option('-d, --debug', `output debug messages for debugging, overrides "${state.debugMode}"`)
     .parse(process.argv);
@@ -248,6 +259,7 @@ try {
   // through autoConfig (from associated agent) or local configuration (just the config file)
   //
   processConfigItem('monitor.noReport', 'noReport', 'noReport');
+  processConfigItem('sendStats', 'sendStats', 'sendStats');
 
   //============= validate the properties in the config for monitor mode ============
   processConfigItem('autoConfig', 'auto', 'agent.autoConfig');
@@ -382,13 +394,13 @@ function startMonitoring() {
     if (state.verbose) {
       logger.info(`monitor ${JSON.stringify(state.monitor, null, '  ')}`);
     }
-    resetMonitoring(existingConnections, state.connections);
+    reconfigMonitoring(existingConnections, state.connections);
     // remember what we just set up
     existingConnections = state.connections;
 
     // initiate reporting
     reportTimer = setInterval(function () {
-      state.reportCounter++;
+      state.report.counter++;
       // if agent has not responded yet to prior report, continue accumulating
       // and don't generate a report (which resets accumulator)
 
@@ -429,7 +441,7 @@ function startMonitoring() {
         }
       });
       if (state.checkForDisc.length) {
-        checkForDisconnects(state.reportCounter).then(() => {
+        checkForDisconnects(state.report.counter).then(() => {
           // nothing todo
         }, err => {
           // nothing todo
@@ -455,7 +467,7 @@ function stopMonitoring() {
 
 // An asynchronous operation to perform a netstat operation that checks for presence of
 // TCP/IP connection as defined in the existingConnections
-// @param is the value of state.reportCounter when this check was initiated and is intended to show if the
+// @param is the value of state.report.counter when this check was initiated and is intended to show if the
 // time to perform netstate (and maybe other) checks is longer than the reporting period
 function checkForDisconnects(reptCounter) {
 
@@ -509,7 +521,7 @@ function checkForDisconnects(reptCounter) {
             // The setting of disconnected property in samples is performed here *synchronously*
             // and affects the current reporting period, even though the netstat
             // may have started in the prior (or earlier) reporting period, depending on how long it took to finish
-            logger.verbose(`netstat done, started @${reptCounter} finished @${state.reportCounter}, found ${Object.keys(established).length} established monitored connections out of ${tcpipCandidates.length} tcpip candidates`);
+            logger.verbose(`netstat done, started @${reptCounter} finished @${state.report.counter}, found ${Object.keys(established).length} established monitored connections out of ${tcpipCandidates.length} tcpip candidates`);
             if (err) {
               console.error(`netstat error occurred ${err}`);
               state.netstat.performing = undefined;
@@ -528,9 +540,12 @@ function checkForDisconnects(reptCounter) {
               }
             });
             try {
-              state.netstat.time += Date.now() - state.netstat.performing;
+              const elapsed = (Date.now() - state.netstat.performing) / 1000; // seconds with 3 decimal places
+              state.netstat.time += elapsed; // seconds
+              state.netstat.maxTime = Math.max(state.netstat.maxTime || 0, elapsed);
+              state.netstat.minTime = Math.min(state.netstat.minTime || Number.MAX_SAFE_INTEGER, elapsed);
               state.netstat.ran++;
-              state.netstat.avgTime = Math.floor(state.netstat.time / state.netstat.ran);
+              state.netstat.avgTime = Math.round(state.netstat.time / state.netstat.ran * 1000) / 1000; // seconds with 3 decimal places
               state.netstat.disconnects += disconnects.length;
               state.netstat.connects += connects.length;
               logger.verbose(`netstat stats ${JSON.stringify(state.netstat)}`);
@@ -545,6 +560,7 @@ function checkForDisconnects(reptCounter) {
           logger.debug(`netstat data ${JSON.stringify(data)}`);
           const connection = tcpipCandidates.find(conn => isMatch(conn, data));
           if (connection) {
+            state.report.inReport++; // found this connection in the netstat report
             if (data.state === 'ESTABLISHED') {
               established[connection.interfaceUid] = true;
             }
@@ -597,6 +613,12 @@ function report() {
         })
       }
     };
+    if (state.sendStats) {
+      send.stats = {
+        netstat: state.netstat,
+        report: state.report
+      }
+    }
 
     if (send.snapshot.connections.length) {
       logger.verbose(`${send.snapshot.timestamp} ${state.monitor.noReport ? `noReport is set so, NOT SENT ` : ''}${JSON.stringify(send, null, '  ')}`); // multiple lines
@@ -632,6 +654,7 @@ function report() {
           if (state.agent.apiKeys.length) {
             // todo - disgard the key, if it expired
             // state.agent.apiKeys.push(badKey);
+            state.report.rekeys++;
             setTimeout(() => {
               makeSensorReportRequest();
             }, state.retryPeriod || 3000);
@@ -645,6 +668,7 @@ function report() {
           setTimeout(() => {
             // Is there a limit to the retries?
             // What to do if abandon the request and reject?
+            state.report.retries++;
             makeSensorReportRequest();
           }, state.retryPeriod || 3000);
         }
@@ -658,10 +682,10 @@ function report() {
 // If the configuration it receives is different from the prior configuration, then adjust
 // by editing, removing, or adding new monitors
 
-// resetMonitoring is called with (first, next) configuration.  It compares the
+// reconfigMonitoring is called with (first, next) configuration.  It compares the
 // old set of connections (empty if first time) with the new set of connection definitions,
 // using the index of monitored caps (connections) (which is empty if first time)
-function resetMonitoring(oldConnections, newConnections) {
+function reconfigMonitoring(oldConnections, newConnections) {
   let newOnes = newConnections.filter(conn => {
     return !monitored[conn.key()];
   });
@@ -674,6 +698,7 @@ function resetMonitoring(oldConnections, newConnections) {
     return !newConnections.find(nc => nc.key() === oc.key());
   });
   logger.debug(`removeThese: ${JSON.stringify(removeThese, null, '  ')}`);
+  state.report.reconfig++;
   // if existing connections monitored and they are NOT in the new set of connections
   // then close them.
   removeThese.forEach(oc => {

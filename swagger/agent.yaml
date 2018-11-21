@@ -30,7 +30,7 @@ securityDefinitions:
     name: Authorization
     in: header
     description: >
-      For accessing the API a valid JWT token must be passed in all the web api call (except ping)
+      For accessing the API a valid API token must be passed in all the web api call (except ping)
       in the 'Authorization' header.
 
       The following syntax must be passed in the 'Authorization' header
@@ -256,6 +256,41 @@ definitions:
             type: array
             items:
               $ref: '#/definitions/SensorReportConnection'
+      stats:
+        type: object
+        properties:
+          netstat:
+            type: object
+            properties:
+              performing: # Date.now() when netstat was started as is still running
+                type: number
+              disconnects: # of times a monitored interface was not found ESTABLISHED in netstat report
+                type: number
+              connects: # of netstat reports that match monitored ESTABLISHED interfaces
+                type: number
+              inReport: # of times a monitored interface was reported on by netstat
+                type: number
+              ran: # total # of times netstat ran (for computing avg)
+                type: number
+              time: # total millis netstat ran (for computing avg)
+                type: number
+              avgTime:
+                type: number
+              maxTime:
+                type: number
+              minTime:
+                type: number
+          report:
+            type: object
+            properties:
+              counter:
+                type: number
+              retries:
+                type: number
+              rekeys:
+                type: number
+              reconfig:
+                type: number
   SensorReportConnection:
     type: object
     properties:
