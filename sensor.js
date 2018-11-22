@@ -159,9 +159,9 @@ const state = {
     ran: 0, // # of times netstat was run
     time: 0, // total millis netstat ran (used to compute avgTime)
     avgTime: 0, // avg execution time for a netstat call
-    minTime: Number.MAX_SAFE_INTEGER,
+    minTime: 0,
     maxTime: -1,
-    minQuietToDisconnect: Number.MAX_SAFE_INTEGER,
+    minQuietToDisconnect: 0,
     maxQuietToDisconnect: 0,
   },
   connections: [], // Connection objects assigned initially from config or autoConfig - what connections to monitor
@@ -170,7 +170,8 @@ const state = {
     counter: 0,
     retries: 0, // number of retry attempts to post sensorReport to agent
     rekeys: 0, // number of apiKey changes performed
-    reconfig: 0 // number of reconfigurations performed
+    reconfig: 0, // number of reconfigurations performed
+    tooSoon: 0, // # of times a new report was set to be sent but agent has not yet responded to the previous one
   }, // increments once at the begining of each reporting period
   quietToDisconnect: {}, // by interfaceId -> millis from first detected 0 charCount until disconnect detected
   checkForDisc: [], // of interfaceUid.  existingConnection[interfaceUid] = interface config (to get src,dst,port,kind
@@ -406,60 +407,35 @@ function startMonitoring() {
     // initiate reporting
     reportTimer = setInterval(function () {
       state.report.counter++;
+
       // if agent has not responded yet to prior report, continue accumulating
       // and don't generate a report (which resets accumulator)
-
       if (state.agentReportInProgress) {
+        state.report.tooSoon++;
         return;
       }
       state.agentReportInProgress = new Date();
       const timestampISO = state.agentReportInProgress.toISOString();
       logger.debug(`${timestampISO} time to compile and send sensorReport`);
 
-      // Examine for interfaces that have been quiet and track how long they have been quiet
-      // using quietForHowLong[interfaceUid] = millis since last non-zero reading
-      // Therby maintaining candidates for disconnect check to state.checkForDisc
-      existingConnections.forEach(conn => {
-        const interfaceUid = conn.interfaceUid;
-        const sample = samplesIndex[interfaceUid];
-        // Keep track of how long since we last had characters measured on this interface
-        if (!sample || !sample.charCount) {
-          if (!quietForHowLong[interfaceUid]) { // undefined or 0
-            quietForHowLong[interfaceUid] = state.monitor.sampleRate; // no charCount for last (sampleRate) millis
-          } else {
-            quietForHowLong[interfaceUid] += state.monitor.sampleRate; // additional (sampleRate) seconds with no charCount
+      // Use netstat to detect disconnections (missing ESTABLISHED sockets)
+      // netstat takes from 67-135 millis to complete
+      // then attempt to send the sensorReport
+      checkForDisconnects(state.report.counter).then(() => {
+        // updated samples with disconnect data from use of netstat
+        sendSensorReport().then(result => {
+          state.agentReportInProgress = null;
+          if (result.newConfig) {
+            monitorFulfill(); // only fulfills when need to reconfigure
           }
-          // Has it been quiet long enough to include this interface for disconnect detection?
-          if (quietForHowLong[interfaceUid] >= state.monitor.waitBeforeDiscCheck) {
-            // add to list of those interfaces we should check if still working
-            if (!state.checkForDisc.includes(interfaceUid)) {
-              state.checkForDisc.push(interfaceUid);
-            }
-          }
-        } else {
-          // We have measured some volume, so interface is NOT a candidate for checking on disconnect
-          let i = state.checkForDisc.includes(interfaceUid);
-          if (i > -1) {
-            state.checkForDisc.splice(i, 1); // remove the entry
-          }
-          quietForHowLong[interfaceUid] = 0; // had a non-zero charCount this sampling period
-          state.quietToDisconnect[interfaceUid] = 0; // perhaps delete?
-        }
-      });
-      if (state.checkForDisc.length) {
-        checkForDisconnects(state.report.counter).then(() => {
-          // nothing todo
         }, err => {
-          // nothing todo
+          // fatal failure to send sensor report (ran out of apikeys)
+          state.agentReportInProgress = null;
+          logger.error(`Exiting sensor program..`);
+          process.exit(1);
         });
-      }
-      report().then(result => {
-        state.agentReportInProgress = null;
-        if (result.newConfig) {
-          monitorFulfill(); // only fulfills when need to reconfigure
-        }
       }, err => {
-        state.agentReportInProgress = null;
+        // nothing todo
       });
 
     }, state.monitor.sampleRate); // ms between reporting
@@ -478,8 +454,51 @@ function checkForDisconnects(reptCounter) {
 
   return new Promise((fulfill, reject) => {
 
+    // Examine for interfaces that have been quiet and track how long they have been quiet
+    // using quietForHowLong[interfaceUid] = millis-since-last-non-zero-sampling
+    // Thereby determining if any need to run netstat to determine disconnect states
+    existingConnections.forEach(conn => {
+      const interfaceUid = conn.interfaceUid;
+      const sample = samplesIndex[interfaceUid];
+      // Keep track of how long since we last had characters measured on this interface
+      if (!sample || !sample.charCount) {
+        if (!quietForHowLong[interfaceUid]) { // undefined or 0
+          quietForHowLong[interfaceUid] = state.monitor.sampleRate; // no charCount for last (sampleRate) millis
+        } else {
+          quietForHowLong[interfaceUid] += state.monitor.sampleRate; // additional (sampleRate) seconds with no charCount
+        }
+        // Has it been quiet long enough to include this interface for disconnect detection?
+        if (quietForHowLong[interfaceUid] >= state.monitor.waitBeforeDiscCheck) {
+          // add to list of those interfaces we should check if still working
+          if (!state.checkForDisc.includes(interfaceUid)) {
+            state.checkForDisc.push(interfaceUid);
+          }
+        }
+      } else {
+        // We have measured some volume, so interface is NOT quiet enough to warrant running netstat
+        let i = state.checkForDisc.includes(interfaceUid);
+        if (i > -1) {
+          state.checkForDisc.splice(i, 1); // remove the entry
+        }
+        quietForHowLong[interfaceUid] = 0; // had a non-zero charCount this sampling period, so not quiet
+      }
+    });
+    // clear object that measures how long from zero detect to disconnect detect
+    state.quietToDisconnect = {};
+    const now = Date.now();
+    // quietForHowLong is a duration, create state.quietToDisconnect as an actual time
+    Object.keys(quietForHowLong).forEach(uid => {
+      if (quietForHowLong[uid]) {
+        state.quietToDisconnect[uid] = now - quietForHowLong[uid]; // roughly time when first went quiet
+      }
+    });
+    if (!state.checkForDisc.length) {
+      return fulfill(); // all monitored interfaces reported some volume
+    }
+
     // @param conn is a connection specification from sensor configuration.  Has kind, src, dst, port
     // @param nsData one result from netstat, has local:{port,address},remote:{port,address},state,pid
+    // @return true if match, else undefined
     function isMatch(conn, nsData) {
       // netstat returns data in relation to the machine that the sensor is running on
       // So this works to detect the estistance of a connection if run on one of the two machines
@@ -489,122 +508,127 @@ function checkForDisconnects(reptCounter) {
       // If running the sensor on the server, match the connection destination to the local.address and local.port
       // If running the sensor on the client, match the connection destination to the remote.address and remote.port
       if (conn.src[0] === nsData.local.address && conn.dst[0] === nsData.remote.address && conn.port === nsData.remote.port) {
-        return conn;
+        return true;
       }
-      if (conn.src[0] === nsData.remote.address && conn.dst[0] === nsData.local.address && conn.port === nsData.local.port) {
-        return conn;
-      }
-      return undefined;
+      return conn.src[0] === nsData.remote.address && conn.dst[0] === nsData.local.address && conn.port === nsData.local.port;
     }
 
-    // clear object that measures how long from zero detect to disconnect detect
-    Object.keys(state.quietToDisconnect).forEach(uid => { delete state.quietToDisconnect[uid]; });
-    const now = Date.now();
-    Object.keys(quietForHowLong).forEach(uid => {
-      if (quietForHowLong[uid]) {
-        state.quietToDisconnect[uid] = now - quietForHowLong[uid]; // roughly when first went quiet
-      }
-    });
+    // Gathering stats on how long from a zero characterCount until disconnect is detected by netstat.
 
-    const candidates = existingConnections.filter(conn => state.checkForDisc.includes(conn.interfaceUid));
-    // can only use netstat is determine if connection is established for connections whose kind is TCP/IP
-    const tcpipCandidates = candidates.filter(conn => conn.kind === 'TCP/IP');
+    // Note that interfaces may often have zero character count without being disconnected.
+    // If any one interface has zero character count, then we do a full netstat and then detect
+    // if any of the interfaces are down.  The cost of detecting disconnect is essentially the same if we do all
+    // verses doing just those with zero character count.
+
+
+    // const candidates = existingConnections.filter(conn => state.checkForDisc.includes(conn.interfaceUid));
+    // can only use netstat to determine if connection is established for connections whose kind is 'TCP/IP'
+    // because they have persistent socket.  Thos of kind 'WEB' are transient socket connections, for which
+    // netstat is not an appropriate measure of disconnected (an alternative would be an ping-like api call).
+    const tcpipCandidates = existingConnections.filter(conn => conn.kind === 'TCP/IP');
 
     // Track which connections that we are monitoring have been detected as ESTABLISHED by netstat
     const established = {}; // interfaceUid = true if 'ESTABLISHED' detected
     //
-    logger.verbose(`netstat candidates with 0 charCount: ${candidates.map(cn => cn.interfaceUid)}`);
-    logger.verbose(`netstat tcpipCandidates with 0 charCount: ${tcpipCandidates.map(cn => cn.interfaceUid)}`);
+    // logger.verbose(`netstat candidates with 0 charCount: ${candidates.map(cn => cn.interfaceUid)}`);
+    logger.verbose(`netstat tcpipCandidates: ${tcpipCandidates.map(cn => cn.interfaceUid)}`);
     // can use netstat to look for matching connections
-    if (tcpipCandidates.length) {
-      if (!state.netstat.performing) {
-        state.netstat.performing = Date.now();
-        logger.verbose(`netstat starting`);
-        netstat({
-          filter: {
-            protocol: 'tcp'
-          },
-          sync: false,
-          watch: false,
-          // Called when finished, maybe because of error
-          done: function (err) {
+    if (!tcpipCandidates.length) {
+      logger.verbose(`netstat There are NO tcpipCandidates for disconnect probing`);
+      return fulfill();
+    }
 
-            const disconnects = []; // accumulate disconnects for potential check with pings
-            const connects = []; // accumulate established connections for stats
+    if (state.netstat.performing) {
+      logger.warning(`netstat Calling netstat when it is already running for ${Date.now() - state.netstat.performing} millis, skipping this report period`);
+      return fulfill();
+    }
 
-            // The setting of disconnected property in samples is performed here *synchronously*
-            // and affects the current reporting period, even though the netstat
-            // may have started in the prior (or earlier) reporting period, depending on how long it took to finish
-            logger.verbose(`netstat done, started @${reptCounter} finished @${state.report.counter}, found ${Object.keys(established).length} established monitored connections out of ${tcpipCandidates.length} tcpip candidates`);
-            if (err) {
-              console.error(`netstat error occurred ${err}`);
-              state.netstat.performing = undefined;
-              return reject(err);
-            }
-            const now = Date.now();
-            tcpipCandidates.forEach(conn => {
-              sample = getSample(conn.interfaceUid);
+    state.netstat.performing = Date.now();
+    logger.verbose(`netstat starting`);
+    netstat({
+      filter: {
+        protocol: 'tcp'
+      },
+      sync: false,
+      watch: false,
+      // Called when finished, maybe because of error
+      done: function (err) {
 
-              if (established[conn.interfaceUid]) {
-                sample.disconnected = false;
-                state.disconnected[conn.interfaceUid] = false;
-                connects.push(conn.interfaceUid);
-              } else {
-                // if this a change in disconnect status?
-                const wasDisc = state.disconnected[conn.interfaceUid];
-                logger.verbose(`netstat setting ${conn.interfaceUid} as disconnected`);
-                sample.disconnected = true;
-                state.disconnected[conn.interfaceUid] = true;
-                disconnects.push(conn.interfaceUid);
-                if (!wasDisc) {
-                  const howLong = now - state.quietToDisconnect[conn.interfaceUid];
-                  state.netstat.minQuietToDisconnect = Math.min(state.netstat.minQuietToDisconnect, howLong);
-                  state.netstat.maxQuietToDisconnect = Math.max(state.netstat.maxQuietToDisconnect, howLong);
-                }
-              }
-            });
-            try {
-              const elapsed = (Date.now() - state.netstat.performing) / 1000; // seconds with 3 decimal places
-              state.netstat.time += elapsed; // seconds
-              state.netstat.maxTime = Math.max(state.netstat.maxTime || 0, elapsed);
-              state.netstat.minTime = Math.min(state.netstat.minTime || Number.MAX_SAFE_INTEGER, elapsed);
-              state.netstat.ran++;
-              state.netstat.avgTime = Math.round(state.netstat.time / state.netstat.ran * 1000) / 1000; // seconds with 3 decimal places
-              state.netstat.disconnects += disconnects.length;
-              state.netstat.connects += connects.length;
-              logger.verbose(`netstat stats ${JSON.stringify(state.netstat)}`);
-            } catch (ex) {
-              logger.error(`netstat error updating netstat stats and computing avg time it takes to run ${err}`);
-            }
+        const disconnects = []; // accumulate disconnects for potential check with pings
+        const connects = []; // accumulate established connections for stats
 
-            state.netstat.performing = undefined;
-            fulfill();
-          }
-        }, function (data) { // called for each connection
-          logger.debug(`netstat data ${JSON.stringify(data)}`);
-          const connection = tcpipCandidates.find(conn => isMatch(conn, data));
-          if (connection) {
-            state.report.inReport++; // found this connection in the netstat report
-            if (data.state === 'ESTABLISHED') {
-              established[connection.interfaceUid] = true;
+        // We have examined all netstat sockets and compiled a establish[connectionUid] = true map.
+        // The setting of disconnected property in samples is performed here *synchronously*
+        // and affects the current reporting period, even though the netstat theorectically
+        // may have started in the prior (or earlier) reporting period, depending on how long it took to finish.
+        // Practical measures showed 67-134 ms, so it is much smaller than the 10,000 ms reporting period
+        logger.verbose(`netstat done, started @${reptCounter} finished @${state.report.counter}, found ${Object.keys(established).length} established monitored connections out of ${tcpipCandidates.length} tcpip candidates`);
+        if (err) {
+          console.error(`netstat error occurred ${err}`);
+          state.netstat.performing = undefined;
+          return reject(err);
+        }
+        const now = Date.now();
+        tcpipCandidates.forEach(conn => {
+          sample = getSample(conn.interfaceUid);
+
+          if (established[conn.interfaceUid]) {
+            sample.disconnected = false;
+            state.disconnected[conn.interfaceUid] = false;
+            connects.push(conn.interfaceUid);
+          } else {
+            // if this is a change in disconnect status?
+            const wasDisc = state.disconnected[conn.interfaceUid];
+            logger.verbose(`netstat setting ${conn.interfaceUid} as disconnected`);
+            sample.disconnected = true;
+            state.disconnected[conn.interfaceUid] = true;
+            disconnects.push(conn.interfaceUid);
+            if (!wasDisc) {
+              const howLong = now - state.quietToDisconnect[conn.interfaceUid];
+              state.netstat.minQuietToDisconnect = Math.min(state.netstat.minQuietToDisconnect || Number.MAX_SAFE_INTEGER, howLong);
+              state.netstat.maxQuietToDisconnect = Math.max(state.netstat.maxQuietToDisconnect, howLong);
             }
           }
         });
-      } else {
-        logger.warning(`netstat Calling netstat when it is already running for ${Date.now() - state.netstat.performing} millis, skipping this report period`);
+        try {
+          const elapsed = (now - state.netstat.performing) / 1000; // seconds with 3 decimal places
+          state.netstat.time += elapsed; // seconds
+          state.netstat.maxTime = Math.max(state.netstat.maxTime || 0, elapsed);
+          state.netstat.minTime = Math.min(state.netstat.minTime || Number.MAX_SAFE_INTEGER, elapsed);
+          state.netstat.ran++;
+          state.netstat.avgTime = Math.round(state.netstat.time / state.netstat.ran * 1000) / 1000; // seconds with 3 decimal places
+          state.netstat.disconnects += disconnects.length;
+          state.netstat.connects += connects.length;
+          logger.verbose(`netstat stats ${JSON.stringify(state.netstat)}`);
+          state.netstat.error = undefined;
+        } catch (ex) {
+          state.netstat.error = `netstat error updating netstat stats and computing avg time it takes to run ${err}`;
+          logger.error(state.netstat.error);
+        }
+
+        state.netstat.performing = undefined;
+        fulfill();
       }
-    } else {
-      logger.verbose(`netstat There are NO tcpipCandidates for disconnect probing`);
-    }
+    }, function (data) { // called for each TCP/IP connection
+      logger.debug(`netstat data ${JSON.stringify(data)}`);
+      const connection = tcpipCandidates.find(conn => isMatch(conn, data));
+      if (connection) {
+        state.report.inReport++; // found a moitored connection in the netstat report
+        if (data.state === 'ESTABLISHED') {
+          established[connection.interfaceUid] = true;
+        }
+      }
+    });
   });
 }
 //
 state.postReportUrl = `${commonLib.getProtoHostPort()}${state.config.agent.apiBase}sensor/report`;
 logger.info(`Sensor reports to url: ${state.postReportUrl}`);
 
-// send report to the agent, and ready for next sample
-function report() {
+// send sensor report to the agent, and prepare for next sample period
+function sendSensorReport() {
   // Only calls reject if run out of acceptable apiKeys
+  // In which case, this sensor will be unable to operate
   return new Promise((fulfill, reject) => {
     // add to queue and dequeue one at a time until successful
     // handle retry with new apiKey when 401
@@ -676,14 +700,15 @@ function report() {
           // retry with new apiKey if any left to try, else exit
           const badKey = state.agent.apiKeys.shift();
           if (state.agent.apiKeys.length) {
-            // todo - disgard the key, if it expired
-            // state.agent.apiKeys.push(badKey);
+            // We have a policy choice:
+            // 1) dispose of the key, if it expired <-- option chosen at present 11/21/2018
+            // 2) push key to the far end to try later - state.agent.apiKeys.push(badKey);
             state.report.rekeys++;
             setTimeout(() => {
               makeSensorReportRequest();
             }, state.retryPeriod || 3000);
           } else {
-            logger.error(`all apiKeys are rejected, quitting after unsuccesful send of sensorReport:`);
+            logger.error(`all apiKeys are rejected, quitting after unsuccessful send of sensorReport:`);
             logger.error(JSON.stringify(send, null, '  '));
             reject('no acceptable api keys available');
           }
