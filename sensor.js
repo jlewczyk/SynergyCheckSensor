@@ -851,7 +851,7 @@ function monitorThisConnection(conn) {
             if (!state.debugMode && !state.verbose) {
               logger.info(`${new Date().toLocaleString()}    IPv4 TCP from ${ipv4.info.srcaddr}:${tcp.info.srcport} to ${ipv4.info.dstaddr}:${tcp.info.dstport} length=${datalen}`);
             }
-            // by interfaceUid -> { charCount, packets, disconnected, lastMessageTimestamp }
+            // by interfaceUid -> { charCount, packets, disconnected, lastMessageTimestamp, sourceNoPing, targetNoPing }
             sample = getSample(conn.interfaceUid);
             sample.charCount += datalen;
             sample.packetCount++;
