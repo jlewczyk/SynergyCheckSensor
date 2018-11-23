@@ -635,96 +635,100 @@ function sendSensorReport() {
     // When to give up retrying?
     // What to do with abandoned reports?
 
-    // generate unique transaction number
-    // by combining this with the id of the sensor and a counter
-    state.transactionCounter++;
-    const transactionId = `${state.sensorId}|${startedMills}|${state.transactionCounter}`;
-    state.lastTransactionId = transactionId;
+    try {
+      // generate unique transaction number
+      // by combining this with the id of the sensor and a counter
+      state.transactionCounter++;
+      const transactionId = `${state.sensorId}|${startedMills}|${state.transactionCounter}`;
+      state.lastTransactionId = transactionId;
 
-    const send = {
-      snapshot: {
-        sensorId: state.sensorId,
-        customerId: state.customerId,
-        timestamp: new Date().toISOString(),
-        transactionId: transactionId,
-        duration: '10s',
-        connections: samples.map(s => {
-          return {
-            interfaceUid: s.interfaceUid,
-            charCount: s.charCount,
-            packetCount: s.packetCount,
-            disconnected: s.disconnected,
-            sourceNoPing: s.sourceNoPing,
-            targetNoPing: s.targetNoPing,
-            lastMessageTimestamp: s.lastMessageTimestamp
-          };
-        })
-      }
-    };
-    if (state.sendStats) {
-      send.stats = {
-        netstat: state.netstat,
-        report: state.report
-      }
-    }
-
-    if (send.snapshot.connections.length) {
-      logger.verbose(`${send.snapshot.timestamp} ${state.monitor.noReport ? `noReport is set so, NOT SENT ` : ''}${JSON.stringify(send, null, '  ')}`); // multiple lines
-    } else {
-      logger.verbose(`${send.snapshot.timestamp} ${state.monitor.noReport ? `noReport is set so, NOT SENT ` : ''}${JSON.stringify(send)}`); // a single line
-    }
-
-    if (state.monitor.noReport) {
-      fulfill({});
-    }
-
-    samples.length = 0; // reset. Will accumulate for new sampling period
-    samplesIndex = {};
-
-    function makeSensorReportRequest() {
-      request({
-        method: 'POST',
-        uri: state.postReportUrl,
-        body: send,
-        json: true, // automatically stringifies body
-        headers: {
-          'Authorization': `Bearer ${state.agent.apiKeys[0]}`
+      const send = {
+        snapshot: {
+          sensorId: state.sensorId,
+          customerId: state.customerId,
+          timestamp: new Date().toISOString(),
+          transactionId: transactionId,
+          duration: '10s',
+          connections: samples.map(s => {
+            return {
+              interfaceUid: s.interfaceUid,
+              charCount: s.charCount,
+              packetCount: s.packetCount,
+              disconnected: s.disconnected,
+              sourceNoPing: s.sourceNoPing,
+              targetNoPing: s.targetNoPing,
+              lastMessageTimestamp: s.lastMessageTimestamp
+            };
+          })
         }
-      }).then(response => {
-        logger.verbose(JSON.stringify(response));
-        // response is ok, optional new config available indicator
-        fulfill(response);
-      }).catch(err => {
-        logger.error(err);
-        if (err.statusCode === 401) {
-          // retry with new apiKey if any left to try, else exit
-          const badKey = state.agent.apiKeys.shift();
-          if (state.agent.apiKeys.length) {
-            // We have a policy choice:
-            // 1) dispose of the key, if it expired <-- option chosen at present 11/21/2018
-            // 2) push key to the far end to try later - state.agent.apiKeys.push(badKey);
-            state.report.rekeys++;
+      };
+      if (state.sendStats) {
+        send.stats = {
+          netstat: state.netstat,
+          report: state.report
+        }
+      }
+
+      if (send.snapshot.connections.length) {
+        logger.verbose(`${send.snapshot.timestamp} ${state.monitor.noReport ? `noReport is set so, NOT SENT ` : ''}${JSON.stringify(send, null, '  ')}`); // multiple lines
+      } else {
+        logger.verbose(`${send.snapshot.timestamp} ${state.monitor.noReport ? `noReport is set so, NOT SENT ` : ''}${JSON.stringify(send)}`); // a single line
+      }
+
+      if (state.monitor.noReport) {
+        fulfill({});
+      }
+
+      samples.length = 0; // reset. Will accumulate for new sampling period
+      samplesIndex = {};
+
+      function makeSensorReportRequest() {
+        request({
+          method: 'POST',
+          uri: state.postReportUrl,
+          body: send,
+          json: true, // automatically stringifies body
+          headers: {
+            'Authorization': `Bearer ${state.agent.apiKeys[0]}`
+          }
+        }).then(response => {
+          logger.verbose(JSON.stringify(response));
+          // response is ok, optional new config available indicator
+          fulfill(response);
+        }).catch(err => {
+          logger.error(err);
+          if (err.statusCode === 401) {
+            // retry with new apiKey if any left to try, else exit
+            const badKey = state.agent.apiKeys.shift();
+            if (state.agent.apiKeys.length) {
+              // We have a policy choice:
+              // 1) dispose of the key, if it expired <-- option chosen at present 11/21/2018
+              // 2) push key to the far end to try later - state.agent.apiKeys.push(badKey);
+              state.report.rekeys++;
+              setTimeout(() => {
+                makeSensorReportRequest();
+              }, state.retryPeriod || 3000);
+            } else {
+              logger.error(`all apiKeys are rejected, quitting after unsuccessful send of sensorReport:`);
+              logger.error(JSON.stringify(send, null, '  '));
+              reject('no acceptable api keys available');
+            }
+          } else {
+            // not an unauthorized rejection.  Keep trying
             setTimeout(() => {
+              // Is there a limit to the retries?
+              // What to do if abandon the request and reject?
+              state.report.retries++;
               makeSensorReportRequest();
             }, state.retryPeriod || 3000);
-          } else {
-            logger.error(`all apiKeys are rejected, quitting after unsuccessful send of sensorReport:`);
-            logger.error(JSON.stringify(send, null, '  '));
-            reject('no acceptable api keys available');
           }
-        } else {
-          // not an unauthorized rejection.  Keep trying
-          setTimeout(() => {
-            // Is there a limit to the retries?
-            // What to do if abandon the request and reject?
-            state.report.retries++;
-            makeSensorReportRequest();
-          }, state.retryPeriod || 3000);
-        }
-      });
-    }
-    makeSensorReportRequest();
+        });
+      }
 
+      makeSensorReportRequest();
+    } catch (ex) {
+      logger.error(`Exception in sendSensorReport ${ex}`);
+    }
   });
 }
 // If autoConfig, then sensor will request configuration every state.refresh millis
