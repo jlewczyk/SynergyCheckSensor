@@ -297,6 +297,11 @@ if (!state.report.autoReport) {
   logger.warning(`Will NOT automatically send agentReports. You need to make web api call to start them`);
 }
 
+if (state.config.report && state.config.report.compress !== undefined) {
+  state.report.compress = !!state.config.report.compress;
+  console.info(`Using config report.compress value of ${state.report.compress}`);
+}
+
 if (errors.length) {
   errors.forEach(e => logger.error(e));
   process.exit(1);
