@@ -51,7 +51,7 @@ function Sample(interfaceUid) {
   this.lastMessageTimestamp = undefined;
   this.disconnected = false;
   this.sourceNoPing = false;
-  this.targetNoPing = false;
+  this.destinationNoPing = false;
   samplesIndex[interfaceUid] = this;
   samples.push(this);
 }
@@ -678,7 +678,7 @@ function sendSensorReport() {
               packetCount: s.packetCount,
               disconnected: s.disconnected,
               sourceNoPing: s.sourceNoPing,
-              targetNoPing: s.targetNoPing,
+              destinationNoPing: s.destinationNoPing,
               lastMessageTimestamp: s.lastMessageTimestamp
             };
           })
@@ -707,9 +707,9 @@ function sendSensorReport() {
         logger.verbose(`snapshot = ${JSON.stringify(copy.snapshot)}`);
         //              123456789012 123456789 12345678901 123456789012 123456789012 123456789012
         //              1234567890123456789012345678901234567890123456789012345678901234567890123
-        logger.verbose(`interfaceUid charCount packetCount disconnected sourceNoPing targetNoPing`);
+        logger.verbose(`interfaceUid charCount packetCount disconnected sourceNoPing destinationNoPing`);
         (connections || []).forEach(conn => {
-          logger.verbose(`${pl(conn.interfaceUid, 12)} ${pl(conn.charCount, 9)} ${pl(conn.packetCount, 11)} ${pl(conn.disconnected, 12)} ${pl(conn.sourceNoPing, 12)} ${pl(conn.targetNoPing, 12)}`);
+          logger.verbose(`${pl(conn.interfaceUid, 12)} ${pl(conn.charCount, 9)} ${pl(conn.packetCount, 11)} ${pl(conn.disconnected, 12)} ${pl(conn.sourceNoPing, 12)} ${pl(conn.destinationNoPing, 12)}`);
         });
         logger.verbose(`stats    = ${JSON.stringify(copy.stats)}`);
       }
@@ -898,7 +898,7 @@ function monitorThisConnection(conn) {
 
             logger.verbose(`${new Date().toLocaleString()}    IPv4 TCP from ${ipv4.info.srcaddr}:${tcp.info.srcport} to ${ipv4.info.dstaddr}:${tcp.info.dstport} length=${datalen}`);
 
-            // by interfaceUid -> { charCount, packets, disconnected, lastMessageTimestamp, sourceNoPing, targetNoPing }
+            // by interfaceUid -> { charCount, packets, disconnected, lastMessageTimestamp, sourceNoPing, destinationNoPing }
             sample = ensureSample(conn.interfaceUid);
             sample.charCount += datalen;
             sample.packetCount++;

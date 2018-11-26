@@ -308,11 +308,11 @@ definitions:
       packetCount:
         type: integer
         format: int64
-      disconnected: # nmap says no connection exists between source and target
+      disconnected: # nmap says no connection exists between source and destination
         type: boolean
       sourceNoPing: # source does not respond to ping
         type: boolean
-      targetNoPing: # target does not respond to ping
+      destinationNoPing: # destination does not respond to ping
         type: boolean
       lastMessageTimestamp: # not sure how useful this is - not being forwarded by Agent in agentReport
         type: string
