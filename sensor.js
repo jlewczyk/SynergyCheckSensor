@@ -7,7 +7,6 @@
 //
 // Capture and decode TCP data packets for specified connections, sampling at specified period
 // and reporting to specified concentrator agent at specified period.
-// Generate heartbeat call to concentrator agent.
 // Upon start, make started call to concentrator agent
 // Upon shutdown (expected or not) make ended call to concentrator agent
 //
@@ -134,7 +133,7 @@ const commanderArgs = [
 // This object defines one interface to be monitored
 function Connection(config) {
   this.kind = config.kind;
-  this.measure = config.measure;
+  this.measure = (config.measure || '').split(/[ ,]+/g); // for each if interrogation
   this.src = config.src; // array of ipaddr or hostnames [0] is current active
   this.dst = config.dst; // array of ipaddr or hostnames [0] is current active
   this.port = config.port; // common port for dst server they listen on
@@ -548,16 +547,16 @@ function checkForDisconnects(reptCounter) {
     // can only use netstat to determine if connection is established for connections whose kind is 'TCP/IP'
     // because they have persistent socket.  Thos of kind 'WEB' are transient socket connections, for which
     // netstat is not an appropriate measure of disconnected (an alternative would be an ping-like api call).
-    const tcpipCandidates = existingConnections.filter(conn => conn.kind === 'TCP/IP');
+    const tcpipCandidates = existingConnections.filter(conn => conn.kind === 'TCP/IP' && conn.measure.includes('disc'));
 
     // Track which connections that we are monitoring have been detected as ESTABLISHED by netstat
     const established = {}; // interfaceUid = true if 'ESTABLISHED' detected
     //
     // logger.verbose(`netstat candidates with 0 charCount: ${candidates.map(cn => cn.interfaceUid)}`);
-    logger.verbose(`netstat tcpipCandidates: ${tcpipCandidates.map(cn => cn.interfaceUid)}`);
+    logger.verbose(`netstat monitored for disconnect tcpipCandidates: ${tcpipCandidates.map(cn => cn.interfaceUid)}`);
     // can use netstat to look for matching connections
     if (!tcpipCandidates.length) {
-      logger.verbose(`netstat There are NO tcpipCandidates for disconnect probing`);
+      logger.verbose(`netstat There are NO tcpipCandidates monitored for disconnect probing`);
       return fulfill();
     }
 
@@ -811,7 +810,9 @@ function reconfigMonitoring(oldConnections, newConnections) {
   });
   newOnes.forEach(conn => {
     // will update samplesIndex[interfaceUid] and samples array
-    monitorThisConnection(conn); // set up to monitor
+    if (conn.measure.includes('cc') || conn.measure.includes('pc')) {
+      monitorThisConnection(conn); // set up to monitor of character count and/or packet count
+    }
   });
 }
 // Establish a monitor for the specified connection
