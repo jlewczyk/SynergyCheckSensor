@@ -662,18 +662,40 @@ function sendSensorReport() {
           })
         }
       };
+      send.snapshot.connections.sort();
       if (state.sendStats) {
         send.stats = {
           netstat: state.netstat,
           report: state.report
         }
       }
+      // make report more readable on logger output
+      function ppReport(send) {
+        function pl(x, w) {
+          return `${x}                    `.substr(0, w);
+        }
+        function pr(x, w) {
+          return `                  ${x}`.substr(-w);
+        }
+        const copy = JSON.parse(JSON.stringify(send));
+        const connections = copy.snapshot.connections;
+        delete copy.snapshot.connections;
+        logger.verbose(`snapshot = ${JSON.stringify(copy.snapshot)}`);
+        //              123456789012 123456789 12345678901 123456789012 123456789012 123456789012
+        //              1234567890123456789012345678901234567890123456789012345678901234567890123
+        logger.verbose(`interfaceUid charCount packetCount disconnected sourceNoPing targetNoPing`);
+        (connections || []).forEach(conn => {
+          logger.verbose(`${pl(conn.interfaceUid, 12)} ${pl(conn.charCount, 9)} ${pl(conn.packetCount, 11)} ${pl(conn.disconnected, 12)} ${pl(conn.sourceNoPing, 12)} ${pl(conn.targetNoPing, 12)}`);
+        });
+        logger.verbose(`stats    = ${JSON.stringify(copy.stats)}`);
+      }
 
       if (send.snapshot.connections.length) {
-        logger.verbose(`${send.snapshot.timestamp} ${state.monitor.noReport ? `noReport is set so, NOT SENT ` : ''}${JSON.stringify(send, null, '  ')}`); // multiple lines
+        logger.verbose(`${send.snapshot.timestamp} ${state.monitor.noReport ? `noReport is set so, NOT SENT ` : ''}`); // multiple lines
       } else {
-        logger.verbose(`${send.snapshot.timestamp} ${state.monitor.noReport ? `noReport is set so, NOT SENT ` : ''}${JSON.stringify(send)}`); // a single line
+        logger.verbose(`${send.snapshot.timestamp} ${state.monitor.noReport ? `noReport is set so, NOT SENT ` : ''}`); // a single line
       }
+      ppReport(send);
 
       if (state.monitor.noReport) {
         fulfill({});
@@ -897,8 +919,8 @@ function getSample(interfaceUid) {
   }
   return sample;
 }
-// Initial contact with agent is via the unauthenticated ping call
-// Continue to ping until agent answers, waiting state.pingPeriod millis
+// Initial contact with agent is via the *unauthenticated* ping call
+// Continue to attempt ping until agent answers, waiting state.pingPeriod millis
 // @return promise fulfilled when ping successful
 // never calls reject, so will attempt to ping forever
 function attemptPing() {

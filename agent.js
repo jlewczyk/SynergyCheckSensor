@@ -85,6 +85,7 @@ const state = {
   configFile: './agent.yaml',
   config: undefined, // set when config file read
   startedMills: startedMills,
+  pingPeriod: 10000,
   autoConfigUrl: undefined, // set when autoConfig executed
   recentConfig : {}, // timestamp and version of most recent autoConfig
 
@@ -315,6 +316,7 @@ processConfigItem('port');
 state.port = process.env.PORT || state.port;
 state.protoHostPort = `${state.httpProtocol || 'http'}://${state.hostName}:${state.port || 80}`;
 
+logger.verbose(`state object...`);
 logger.verbose(JSON.stringify(state, null, '  '));
 
 // Serve only the static files form the dist directory for any web site this hosts
@@ -371,7 +373,7 @@ try {
   logger.error('exiting...');
   process.exit(1);
 }
-logger.debug(swaggerDocument);
+// logger.debug(swaggerDocument);
 
 //------------------- Swagger SPA -----------------------
 // usage: initializeSwagger(app, swaggerDocument).then(() => { ; });
@@ -425,6 +427,40 @@ function initializeSwagger(app, swaggerDoc) {
     }
   });
 }
+// Initial contact with agent is via the *unauthenticated* ping call
+// Continue to attempt ping until agent answers, waiting state.pingPeriod millis
+// @return promise fulfilled when ping successful
+// never calls reject, so will attempt to ping forever
+function attemptSynergyCheckPing() {
+  return new Promise((fulfill, reject) => {
+    function tryOnePing() {
+      makeSynergyCheckPingRequest().then(result => {
+        // success
+        logger.success(`success pinging SynergyCheck at ${state.pingUrl}`);
+        fulfill(result);
+      }, err => {
+        logger.warning(`fail to ping SynergyCheck ${state.pingUrl}, ${err}.  Will try again in ${state.pingPeriod || 30000} millis...`);
+        setTimeout(() => {
+          // try again
+          tryOnePing();
+        }, state.pingPeriod || 10000);
+      });
+    }
+    tryOnePing();
+  });
+}
+// @return a promise
+function makeSynergyCheckPingRequest() {
+  state.pingUrl =
+    `${commonLib.getProtoHostPort()}${state.synergyCheck.apiBase}ping`;
+  logger.verbose(`ping SynergyCheck with GET ${state.pingUrl}`);
+  return request({
+    method: 'GET',
+    uri: state.pingUrl,
+    json: true
+  });
+}
+
 // Encapsulate fetch and configuration, so can detect fail and retry
 // @return a Promise that is fulfilled when config fetches and succesfully processed
 //   and rejected if cannot fetch (e.g. synergyCheck is unavailable) or invalid configuration returned
@@ -489,9 +525,11 @@ function performAutoConfig() {
     });
   });
 }
+
+// config read and verified, now this is the active start of the processing
 initializeSwagger(app, swaggerDocument).then(() => {
   logger.success(`Swagger initialized`);
-  commonLib.getPing().then(() => {
+  attemptSynergyCheckPing().then(() => {
     logger.success(`pinged synergyCheck server at ${commonLib.getProtoHostPort()}`);
     commonLib.getAuthenticate().then(jwtToken => {
       logger.success(`authenticated with synergyCheck server`);
