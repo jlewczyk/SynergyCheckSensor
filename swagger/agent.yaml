@@ -466,7 +466,7 @@ definitions:
     properties:
       kind: # one of 'tcp/ip','web','file'
         type: string
-      measure: # 'cc,pc,disc,snp,tnp'
+      measure: # 'cc,pc,disc,snp,dnp'
         type: string
       src:
         type: string
@@ -565,7 +565,7 @@ definitions:
         type: boolean
       snp:
         type: boolean
-      tnp:
+      dnp:
         type: boolean
       ldts:
         type: string
