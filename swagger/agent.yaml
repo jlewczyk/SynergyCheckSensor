@@ -451,7 +451,7 @@ definitions:
         type: string
       deviceName: # external name of ethernet device being monitored (documentation only)
         type: string
-      sampleRate: # how often to sample traffic - can be miilis or string '10s'
+      samplePeriod: # how often to sample traffic - can be miilis or string '10s'
         type: string
       connections:
         type: array
@@ -497,7 +497,7 @@ definitions:
       locationId:
         type: # where the sensor is located
           string
-      sampleRate: # how often to sample traffic - can be miilis or string '10s'
+      samplePeriod: # how often to sample traffic - can be miilis or string '10s'
         type: string
       connections:
         type: array

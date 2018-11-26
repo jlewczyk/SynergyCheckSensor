@@ -44,6 +44,27 @@ let existingConnections = []; // what is currently being monitored Connection ob
 // this is re-initialized to empty object for each sample period
 const quietForHowLong = {}; // by interfaceUid -> millis since last non-zero charcount detected
 
+// The sample object holds the state of a monitored interface during the sampling period
+function Sample(interfaceUid) {
+  this.interfaceUid = interfaceUid;
+  this.charCount = 0;
+  this.packetCount = 0;
+  this.lastMessageTimestamp = undefined;
+  this.disconnected = false;
+  this.sourceNoPing = false;
+  this.targetNoPing = false;
+  samplesIndex[interfaceUid] = this;
+  samples.push(this);
+}
+// return existing, or make new entry for, specified interfaceUid
+function ensureSample(interfaceUid) {
+  let sample = samplesIndex[interfaceUid];
+  if (!sample) {
+    sample = new Sample(interfaceUid);
+  }
+  return sample;
+}
+
 const samples = []; // connection data { charCount, packets, disconnected, lastMessageTimestamp }
 let samplesIndex = {}; // by interfaceUid -> connection data
 
@@ -90,7 +111,7 @@ const configKeys = [
   'agent.apiKeys', // for security
   'monitor', // object
   'monitor.device', // required ethernet device to monitor
-  'monitor.sampleRate', // milliseconds sample rate
+  'monitor.samplePeriod', // milliseconds sample rate
   'monitor.connections' // array of connection info
 ];
 
@@ -142,7 +163,7 @@ const state = {
     // provided by config or autoConfig
   },
   monitor: {
-    sampleRate: 10000,
+    samplePeriod: 10000,
     version: '?', // supply from config or autoConfig
     name: '?', // supply from config or autoConfig
     device: undefined, // supply by --device, or config.monitor.device or from autoConfig
@@ -338,20 +359,20 @@ try {
   }
 
   if (state.config.monitor) {
-    if (typeof(state.config.monitor.sampleRate) !== 'undefined') {
-      // validate state.config.monitor.sampleRate, it is ms report period
-      if (typeof(state.config.monitor.sampleRate) === 'string') {
+    if (typeof(state.config.monitor.samplePeriod) !== 'undefined') {
+      // validate state.config.monitor.samplePeriod, it is ms report period
+      if (typeof(state.config.monitor.samplePeriod) === 'string') {
         // recognize '10m', etc.
-        state.monitor.sampleRate = parseDuration(state.config.monitor.sampleRate);
-      } else if (typeof(state.config.monitor.sampleRate) === 'number') {
-        state.monitor.sampleRate = state.config.monitor.sampleRate;
+        state.monitor.samplePeriod = parseDuration(state.config.monitor.samplePeriod);
+      } else if (typeof(state.config.monitor.samplePeriod) === 'number') {
+        state.monitor.samplePeriod = state.config.monitor.samplePeriod;
       } else {
-        errors.push(`monitor.sampleRate is not a positive integer "${state.config.monitor.sampleRate}"`);
+        errors.push(`monitor.samplePeriod is not a positive integer "${state.config.monitor.samplePeriod}"`);
       }
       // assume ms
-      // validate sampleRate
-      if (typeof(state.monitor.sampleRate) === 'number' && state.monitor.sampleRate < 1000) {
-        errors.push(`cannot accept monitor.sampleRate < 1000 ms. You specified ${state.config.monitor.sampleRate}`);
+      // validate samplePeriod
+      if (typeof(state.monitor.samplePeriod) === 'number' && state.monitor.samplePeriod < 1000) {
+        errors.push(`cannot accept monitor.samplePeriod < 1000 ms. You specified ${state.config.monitor.samplePeriod}`);
       }
     }
 
@@ -438,7 +459,7 @@ function startMonitoring() {
         // nothing todo
       });
 
-    }, state.monitor.sampleRate); // ms between reporting
+    }, state.monitor.samplePeriod); // ms between reporting
   });
 }
 function stopMonitoring() {
@@ -463,9 +484,9 @@ function checkForDisconnects(reptCounter) {
       // Keep track of how long since we last had characters measured on this interface
       if (!sample || !sample.charCount) {
         if (!quietForHowLong[interfaceUid]) { // undefined or 0
-          quietForHowLong[interfaceUid] = state.monitor.sampleRate; // no charCount for last (sampleRate) millis
+          quietForHowLong[interfaceUid] = state.monitor.samplePeriod; // no charCount for last (samplePeriod) millis
         } else {
-          quietForHowLong[interfaceUid] += state.monitor.sampleRate; // additional (sampleRate) seconds with no charCount
+          quietForHowLong[interfaceUid] += state.monitor.samplePeriod; // additional (samplePeriod) seconds with no charCount
         }
         // Has it been quiet long enough to include this interface for disconnect detection?
         if (quietForHowLong[interfaceUid] >= state.monitor.waitBeforeDiscCheck) {
@@ -570,7 +591,7 @@ function checkForDisconnects(reptCounter) {
         }
         const now = Date.now();
         tcpipCandidates.forEach(conn => {
-          sample = getSample(conn.interfaceUid);
+          sample = ensureSample(conn.interfaceUid);
 
           if (established[conn.interfaceUid]) {
             sample.disconnected = false;
@@ -874,7 +895,7 @@ function monitorThisConnection(conn) {
               logger.info(`${new Date().toLocaleString()}    IPv4 TCP from ${ipv4.info.srcaddr}:${tcp.info.srcport} to ${ipv4.info.dstaddr}:${tcp.info.dstport} length=${datalen}`);
             }
             // by interfaceUid -> { charCount, packets, disconnected, lastMessageTimestamp, sourceNoPing, targetNoPing }
-            sample = getSample(conn.interfaceUid);
+            sample = ensureSample(conn.interfaceUid);
             sample.charCount += datalen;
             sample.packetCount++;
             sample.lastMessageTimestamp = new Date().toISOString();
@@ -903,21 +924,6 @@ function monitorThisConnection(conn) {
       logger.error(`    Unsupported linkType ${linkType}`);
     }
   });
-}
-// return existing, or make new entry for specified interfaceUid
-function getSample(interfaceUid) {
-  let sample = samplesIndex[interfaceUid];
-  if (!sample) {
-    sample = {
-      interfaceUid: interfaceUid,
-      charCount: 0,
-      packetCount: 0,
-      disconnected: false
-    };
-    samplesIndex[interfaceUid] = sample;
-    samples.push(sample); // convenience array
-  }
-  return sample;
 }
 // Initial contact with agent is via the *unauthenticated* ping call
 // Continue to attempt ping until agent answers, waiting state.pingPeriod millis
@@ -987,7 +993,7 @@ function performAutoConfiguration() {
       if (errors.length === 0) {
         state.monitor.version = configObj.version;
         state.monitor.name = configObj.name;
-        state.monitor.sampleRate = configObj.sampleRate ? durationParser(configObj.sampleRate) : state.monitor.sampleRate;
+        state.monitor.samplePeriod = configObj.samplePeriod ? durationParser(configObj.samplePeriod) : state.monitor.samplePeriod;
         state.monitor.device = state.monitor.device || configObj.device; // use command line or config device, else autoconfig
         state.monitor.deviceName = configObj.deviceName; // documentation only
         state.connections = (configObj.connections || []).map(conn => new Connection(conn))
