@@ -128,6 +128,7 @@ const state = {
     maxRetries: 10,
     sendDelay: 10000
   },
+  memory: '?', // approx memory consumed by this agent process
   agentReportQueue: [],
   verbose: false,
   debug: false

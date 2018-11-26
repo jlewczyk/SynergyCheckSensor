@@ -400,6 +400,8 @@ definitions:
         type: array
         items:
           $ref: '#/definitions/SensorConfig'
+      memory: # approx memory used by this agent process
+        type: string
       verbose:
         type: boolean
       debug:
