@@ -12,7 +12,7 @@ info:
   license:
     name: Apache 2.0
     url: 'http://www.apache.org/licenses/LICENSE-2.0.html'
-host: ___HOST_AND_PORT___
+host: localhost:19999
 basePath: /api/v1
 tags:
 - name: agent
@@ -23,7 +23,7 @@ tags:
     description: Find out more
     url: 'http://synergyCheck.com/info'
 schemes:
-- https #___PROTOCOL___
+- http
 securityDefinitions:
   Bearer:
     type: apiKey
@@ -295,6 +295,8 @@ definitions:
                 type: number
               reconfig:
                 type: number
+          memory: # approximate memory use
+            type: string
   SensorReportConnection:
     type: object
     properties:
@@ -451,7 +453,7 @@ definitions:
         type: string
       deviceName: # external name of ethernet device being monitored (documentation only)
         type: string
-      samplePeriod: # how often to sample traffic - can be miilis or string '10s'
+      samplePeriod: # how often to sample traffic - can be millis or string '10s'
         type: string
       connections:
         type: array

@@ -421,6 +421,8 @@ function startMonitoring() {
     if (state.verbose) {
       logger.info(`monitor ${JSON.stringify(state.monitor, null, '  ')}`);
     }
+    const memoryUsed = process.memoryUsage().heapUsed / 1024 / 1024; // in megabytes
+    logger.info(`memory use at startMonitoring is approximately ${Math.round(memoryUsed * 100) / 100} MB`);
     reconfigMonitoring(existingConnections, state.connections);
     // remember what we just set up
     existingConnections = state.connections;
@@ -685,9 +687,11 @@ function sendSensorReport() {
       };
       send.snapshot.connections.sort();
       if (state.sendStats) {
+        const memoryUsed = process.memoryUsage().heapUsed / 1024 / 1024; // in megabytes
         send.stats = {
           netstat: state.netstat,
-          report: state.report
+          report: state.report,
+          memory: `${Math.round(memoryUsed * 100) / 100} MB`
         }
       }
       // make report more readable on logger output
@@ -891,9 +895,8 @@ function monitorThisConnection(conn) {
               return; // filter out empty packets
             }
 
-            if (!state.debugMode && !state.verbose) {
-              logger.info(`${new Date().toLocaleString()}    IPv4 TCP from ${ipv4.info.srcaddr}:${tcp.info.srcport} to ${ipv4.info.dstaddr}:${tcp.info.dstport} length=${datalen}`);
-            }
+            logger.verbose(`${new Date().toLocaleString()}    IPv4 TCP from ${ipv4.info.srcaddr}:${tcp.info.srcport} to ${ipv4.info.dstaddr}:${tcp.info.dstport} length=${datalen}`);
+
             // by interfaceUid -> { charCount, packets, disconnected, lastMessageTimestamp, sourceNoPing, targetNoPing }
             sample = ensureSample(conn.interfaceUid);
             sample.charCount += datalen;
@@ -901,9 +904,7 @@ function monitorThisConnection(conn) {
             sample.lastMessageTimestamp = new Date().toISOString();
 
           } else if (ipv4.info.protocol === PROTOCOL.IP.UDP) {
-            if (state.verbose || state.debugMode) {
-              logger.info('    Decoding UDP ...');
-            }
+            logger.verbose('    Decoding UDP ...');
 
             let udp = decoders.UDP(buffer, ipv4.offset);
             logger.debug(`    UDP info - from port: ${udp.info.srcport} to port: ${udp.info.dstport}`);
