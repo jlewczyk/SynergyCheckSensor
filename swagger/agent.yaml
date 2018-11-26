@@ -12,7 +12,7 @@ info:
   license:
     name: Apache 2.0
     url: 'http://www.apache.org/licenses/LICENSE-2.0.html'
-host: localhost:19999
+host: ___HOST_AND_PORT___
 basePath: /api/v1
 tags:
 - name: agent
@@ -23,7 +23,7 @@ tags:
     description: Find out more
     url: 'http://synergyCheck.com/info'
 schemes:
-- http
+- https #___PROTOCOL___
 securityDefinitions:
   Bearer:
     type: apiKey
