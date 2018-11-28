@@ -94,11 +94,11 @@ paths:
         '200':
           description: Successful report
           schema:
-            $ref: '#/definitions/SensoReportResponse'
+            $ref: '#/definitions/SensorReportResponse'
         '405':
           description: Invalid input
           schema:
-            $ref: '#/definitions/SensoReportResponse'
+            $ref: '#/definitions/SensorReportResponse'
   /sensor/start:
     post:
       tags:
@@ -317,7 +317,7 @@ definitions:
       lastMessageTimestamp: # not sure how useful this is - not being forwarded by Agent in agentReport
         type: string
         format: datetime
-  SensoReportResponse:
+  SensorReportResponse:
     type: object
     properties:
       status:
@@ -326,8 +326,8 @@ definitions:
         type: array
         items:
           type: object
-      newConfig: # if true, then agent has a new configuration for the sensor to load
-        type: boolean
+      newConfig: # if present, then agent has a new configuration for the sensor to use
+        $ref: '#/definitions/SensorConfig'
   Ping:
     type: object
     properties:
@@ -423,11 +423,6 @@ definitions:
         type: string
   AgentConfig:
     type: object
-    properties:
-      agentId:
-        type: string
-      created:
-        type: object
   SwaggerConfig:
     type: object
     properties:
@@ -440,9 +435,6 @@ definitions:
   SensorConfig:
     type: object
     properties:
-      version: # of configuration (increases once per saved update of sensor config)
-        type: integer
-        format: int64
       customer_id:
         type: string
       agent_id:
@@ -455,8 +447,23 @@ definitions:
         type: string
       deviceName: # external name of ethernet device being monitored (documentation only)
         type: string
-      samplePeriod: # how often to sample traffic - can be millis or string '10s'
+      measure: # default measure for each connection
         type: string
+      locationId: # where the sensor is located
+        type: string
+      samplePeriod: # how often to sample traffic - can be miilis or string '10s'
+        type: string
+      disabled: # if not to start monitoring and reporting
+        type: boolean
+      version:
+        type: integer
+        format: unsigned
+        readOnly: true
+      delete: # if true, then see agent_id for new agent to get config from. If no agent_id, halt
+        type: boolean
+      timestamp:
+        type: string
+        format: datetime
       connections:
         type: array
         items:
@@ -466,7 +473,7 @@ definitions:
     properties:
       kind: # one of 'tcp/ip','web','file'
         type: string
-      measure: # 'cc,pc,disc,snp,dnp'
+      measure: # 'cc,pc,disc,snp,tnp'
         type: string
       src:
         type: string
@@ -565,7 +572,7 @@ definitions:
         type: boolean
       snp:
         type: boolean
-      dnp:
+      tnp:
         type: boolean
       ldts:
         type: string

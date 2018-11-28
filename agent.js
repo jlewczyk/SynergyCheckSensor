@@ -78,7 +78,7 @@ const startedMills = started.getTime();
 let priorReport = false; // intiialize to false so recognize first time
 
 const state = {
-  release: '0.0.1',
+  release: '0.1.0',
   autoConfig: false,
   noauth: false, // default to requiring valid authorization token to be supplied on webapi calls
   commandLine: {}, // copy of arguments
@@ -88,6 +88,7 @@ const state = {
   pingPeriod: 10000,
   autoConfigUrl: undefined, // set when autoConfig executed
   recentConfig : {}, // timestamp and version of most recent autoConfig
+  newAutoConfig: undefined, // received from server as response to POST agentReport
 
   // agent is a server, this specified how and where it is listening
   httpProtocol: 'http', // protocol (to inform swagger)
@@ -115,7 +116,7 @@ const state = {
     dur: '60s', // 60 second default
     compress: true // true means leave out configured interfaces that have not reported
   }, // autoConfig or explicit in config file
-  sensors: [], // autoConfig or explicit in config file
+  sensors: [], // most recent configuration of each sensor - from autoConfig or explicit in config file on startup
   sensorStats: {}, // by sensorId
   started: started.toISOString(),
   sensorsAccum: [], // list of sensors supplying data accumulated for next report to synergyCheck
@@ -488,47 +489,61 @@ function performAutoConfig() {
       },
       json: true // parse body
     }).then(configObj => {
-      if (state.debug || state.verbose) {
-        logger.verbose(`autoConfig data is ${JSON.stringify(configObj, null, '  ')}`);
-      }
-      const errors = [];
-      if (configObj.customer_id !== state.synergyCheck.customerId) {
-        errors.push(`expected customerId to be ${state.synergyCheck.customerId} but received ${configObj.customerId}`);
-      }
-      if (configObj.agent_id !== state.agent.agentId) {
-        errors.push(`expected agentId to be ${state.agent.agentId} but received ${configObj.agentid}`);
-      }
-      if (configObj.timestamp) {
-        // todo - is this newer than what we already have?  If not, can ignore it
-        // for use when agent polls server for most recent config so can auto update!
-      }
-      state.recentConfig = {
-        timestamp: configObj.timestamp,
-        sensors: (configObj.sensors || []).map(sens => {
-          return {
-            version: sens.version,
-            timestamp: sens.timestamp
-          }
-        })
-      };
-      Object.assign(state.server, configObj.server || {});
-      Object.assign(state.report, configObj.report || {}); // todo - validate
-      processReportingPeriod(errors);
-      Object.assign(state.sensors, configObj.sensors || {}); // todo - validate
-
-      // todo - validate configuration data and incorporate
-      if (errors.length) {
-        logger.error(`Errors detected on incoming data from ${state.autoConfigUrl}`);
-        errors.forEach(e => { logger.error(e); });
-        reject(errors);
-      } else {
+      processAutoConfig(configObj, false).then(() => {
+        // note the values we use to determine if subsequent configObj has new values for sensors
+        state.recentConfig = {
+          timestamp: configObj.timestamp,
+          sensors: (configObj.sensors || []).map(sens => {
+            return {
+              sensor_id: sens.sensor_id,
+              version: sens.version,
+              timestamp: sens.timestamp
+            }
+          })
+        };
         fulfill();
-      }
+      }, err => {
+        reject(err);
+      });
     }).catch(err => {
       logger.error(`error on GET ${state.autoConfigUrl}, err=${err}`);
       // this could have err.statusCode === 401 for unauthorized
       reject(err);
     });
+  });
+}
+// @param configObj from server
+// @param refresh - true if received subsequent to boot
+function processAutoConfig(configObj, refresh) {
+  return new Promise((fulfill, reject) => {
+    logger.verbose(`autoConfig data is ${JSON.stringify(configObj, null, '  ')}`);
+
+    const errors = [];
+    if (configObj.customer_id !== state.synergyCheck.customerId) {
+      errors.push(`expected customerId to be ${state.synergyCheck.customerId} but received ${configObj.customerId}`);
+    }
+    if (configObj.agent_id !== state.agent.agentId) {
+      errors.push(`expected agentId to be ${state.agent.agentId} but received ${configObj.agentid}`);
+    }
+    if (configObj.timestamp) {
+      // todo - is this newer than what we already have?  If not, can ignore it
+      // for use when agent polls server for most recent config so can auto update!
+    }
+    Object.assign(state.server, configObj.server || {});
+    Object.assign(state.report, configObj.report || {}); // todo - validate
+    processReportingPeriod(errors);
+    Object.assign(state.sensors, configObj.sensors || {}); // todo - validate
+
+    // todo - validate configuration data and incorporate
+    if (errors.length) {
+      logger.error(`Errors detected on incoming data from ${state.autoConfigUrl}`);
+      errors.forEach(e => {
+        logger.error(e);
+      });
+      reject(errors);
+    } else {
+      fulfill();
+    }
   });
 }
 

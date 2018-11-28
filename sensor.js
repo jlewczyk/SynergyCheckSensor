@@ -133,7 +133,7 @@ const commanderArgs = [
 // This object defines one interface to be monitored
 function Connection(config) {
   this.kind = config.kind;
-  this.measure = (config.measure || '').split(/[ ,]+/g); // for each if interrogation
+  this.measure = (config.measure || state.measure || '').split(/[ ,]+/g); // for each if interrogation
   this.src = config.src; // array of ipaddr or hostnames [0] is current active
   this.dst = config.dst; // array of ipaddr or hostnames [0] is current active
   this.port = config.port; // common port for dst server they listen on
@@ -184,6 +184,7 @@ const state = {
     minQuietToDisconnect: 0,
     maxQuietToDisconnect: 0,
   },
+  measure: 'pc,cc,disc,snp,dnp', // default measure for connections (connection can specify an override)
   connections: [], // Connection objects assigned initially from config or autoConfig - what connections to monitor
   disconnected: {}, // interfaceUid = undefined or false, or true if disconnected
   report: {
@@ -448,7 +449,7 @@ function startMonitoring() {
         sendSensorReport().then(result => {
           state.agentReportInProgress = null;
           if (result.newConfig) {
-            monitorFulfill(); // only fulfills when need to reconfigure
+            monitorFulfill(result.newConfig); // only fulfills when need to reconfigure
           }
         }, err => {
           // fatal failure to send sensor report (ran out of apikeys)
@@ -681,7 +682,8 @@ function sendSensorReport() {
               destinationNoPing: s.destinationNoPing,
               lastMessageTimestamp: s.lastMessageTimestamp
             };
-          })
+            // sort for consistency in logs only
+          }).sort((a, b) => a.interfaceUid < b.interfaceUid ? -1 : (a.interfaceUid === b.interfaceUid ? 0 : 1))
         }
       };
       send.snapshot.connections.sort();
@@ -960,11 +962,78 @@ function pingAgent() {
     json: true
   });
 }
-// make call to agent for configuration information and reconfigure
-// the monitors between stopping and restarting sensorReports
+// @param newConfig - optional - if passed in then new configuration to absorb, else
+//           make call to agent for configuration information and reconfigure
+//           the monitors between stopping and restarting sensorReports
 //
-function performAutoConfiguration() {
+function performAutoConfiguration(newConfig) {
   return new Promise((fulfill, reject) => {
+
+    // install the new configuration info in the state
+    // @return empty array if not errors
+    function processNewConfig(configObj) {
+      const errors = [];
+      // validate contents
+      if (configObj.customer_id !== state.customerId) {
+        errors.push(`unexpected customer_id "${configObj.customer_id}"`);
+      }
+      if (configObj.delete) {
+        if (configObj.agent_id) {
+          // will get config from the configObj.agent_id
+          state.config.agent.agentId = configObj.agent_id;
+          return errors;
+
+        } else {
+          // no agent_id!  shut down
+          logger.error(`deleted from agent ${state.config.agent.agentId} and no new agent specified, shutting down...`);
+          process.exit(0);
+        }
+      } else {
+        if (configObj.agent_id !== state.config.agent.agentId) {
+          errors.push(`unexpected agentId "${configObj.agent_id}"`);
+        }
+      }
+      if (configObj.sensor_id !== state.config.sensor.sensorId) {
+        errors.push(`unexpected sensorId "${configObj.sensor_id}"`);
+      }
+      if (errors.length === 0) {
+        state.monitor.name = configObj.name;
+        state.monitor.samplePeriod = configObj.samplePeriod ? durationParser(configObj.samplePeriod) : state.monitor.samplePeriod;
+
+        // Exception!  local device config overrides and cloud config for device
+        state.monitor.device = state.monitor.device || configObj.device; // use command line or config device, else autoconfig
+
+        state.monitor.deviceName = configObj.deviceName; // documentation only
+        state.monitor.locationId = configObj.locationId || state.monitor.locationId; // use command line or config device, else autoconfig
+
+        state.monitor.version = configObj.version;
+        state.monitor.timestamp = configObj.timestamp;
+
+        state.measure = configObj.measure || state.measure;
+
+        state.connections = (configObj.connections || []).map(conn => new Connection(conn));
+
+      }
+      if (errors.length) {
+        console.error('Errors detected in response to autoConfig:');
+        errors.forEach(e => logger.error(e));
+      }
+      return errors;
+    }
+
+
+    if (newConfig) {
+      const errors = processNewConfig(newConfig);
+      if (errors.length) {
+        return reject(errors);
+      }
+      // newConfig.delete means we have new agent to get config from, so drop thru to make request
+      if (!newConfig.delete) {
+        return fulfill();
+      }
+    }
+
+
     // Make request of the specified agent for information on what this sensor is supposed to monitor
     state.getAutoConfigUrl =
       commonLib.getProtoHostPort()
@@ -981,43 +1050,12 @@ function performAutoConfiguration() {
         'Authorization': `Bearer ${state.agent.apiKeys[0]}`
       }
     }).then((configObj) => {
-      const errors = [];
-      // validate contents
-      if (configObj.customerId !== state.customerId) {
-        errors.push(`unexpected customerId "${configObj.customerId}"`);
+      const errors = processNewConfig(configObj);
+      if (errors.length) {
+        return reject(errors);
       }
-      if (configObj.agentId !== state.config.agent.agentId) {
-        errors.push(`unexpected agentId "${configObj.agentId}"`);
-      }
-      if (configObj.sensorId !== state.config.sensor.sensorId) {
-        errors.push(`unexpected sensorId "${configObj.sensorId}"`);
-      }
-      if (errors.length === 0) {
-        state.monitor.version = configObj.version;
-        state.monitor.name = configObj.name;
-        state.monitor.samplePeriod = configObj.samplePeriod ? durationParser(configObj.samplePeriod) : state.monitor.samplePeriod;
-        state.monitor.device = state.monitor.device || configObj.device; // use command line or config device, else autoconfig
-        state.monitor.deviceName = configObj.deviceName; // documentation only
-        state.connections = (configObj.connections || []).map(conn => new Connection(conn))
-        //   return {
-        //     connection_id: conn.connection_id,
-        //     interfaceUid: conn.interfaceUid,
-        //     kind: conn.kind,
-        //     // for now, just take first one.  Later, these represent choices!
-        //     // todo - array of ports corresponding to array of dst and src for auto re-routing with high availability setup
-        //     dst: conn.dst,
-        //     src: conn.src,
-        //     port: conn.port
-        //   };
-        // });
+      return fulfill();
 
-        fulfill();
-
-      } else {
-        console.error('Errors detected in response to autoConfig:');
-        errors.forEach(e => logger.error(e));
-        reject(errors);
-      }
     }, (err) => {
       // todo - status of unauthorized - try other keys
       logger.error(`Error returned from request to agent for configuration ${err}`);
@@ -1027,14 +1065,14 @@ function performAutoConfiguration() {
 }
 // a autoConfig and run workflow
 // run when booting or when sensorReport response says to reconfigure
-function performAutoConfigAndStartMonitoring() {
-  performAutoConfiguration().then(() => {
+function performAutoConfigAndStartMonitoring(newConfig) {
+  performAutoConfiguration(newConfig).then(() => {
     // only fulfilled if agent says to reconfigure
-    startMonitoring().then(() => {
+    startMonitoring().then((newConfig) => {
       // agent returned indicator that there is new configuration (agentReport response)
       // then re-autoConfig
       stopMonitoring();
-      performAutoConfigAndStartMonitoring();
+      performAutoConfigAndStartMonitoring(newConfig);
     });
   }, err => {
     // todo if err.statusCode == 401 retry with other apiKeys, quit if none left
@@ -1046,7 +1084,8 @@ function performAutoConfigAndStartMonitoring() {
 //
 attemptPing().then(result => {
   if (state.autoConfig) {
-    performAutoConfigAndStartMonitoring();
+    // call on boot has no configuration, so fetches from server
+    performAutoConfigAndStartMonitoring(undefined);
   } else {
     // assume all configuration is locally provided via command line args and config file contents
     startMonitoring();
